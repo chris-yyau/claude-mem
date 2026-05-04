@@ -130,11 +130,19 @@ function getAgentsMdPath(projectDir?: string): string {
   // Per-project AGENTS.md (mirrors Claude Code's per-project CLAUDE.md).
   // Worker-side codex injection writes to the same per-project path, so the
   // two writers stay aligned on file location.
+  //
+  // Sources are all host/install controlled — projectDir comes from
+  // OpenCode's ctx.directory (the host process, not user input);
+  // OPENCODE_CONFIG_DIR is an opt-in env override; homedir() is the OS user.
+  // The literal "AGENTS.md" filename component cannot itself escape via
+  // join's normalization. Static analysis (semgrep path-join-traversal) is
+  // suppressed for these three lines.
   if (projectDir) {
+    // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal
     return join(projectDir, "AGENTS.md");
   }
-  // Global fallback for runtimes where ctx.directory is unset.
   if (process.env.OPENCODE_CONFIG_DIR) {
+    // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal
     return join(process.env.OPENCODE_CONFIG_DIR, "AGENTS.md");
   }
   return join(homedir(), ".config", "opencode", "AGENTS.md");
