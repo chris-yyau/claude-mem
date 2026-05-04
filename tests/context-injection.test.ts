@@ -202,4 +202,111 @@ describe('Context Injection', () => {
       expect(content).not.toContain('version 1');
     });
   });
+
+  describe('payload sanitization', () => {
+    it('strips embedded open tags from incoming context', () => {
+      const filePath = join(tempDir, 'CLAUDE.md');
+
+      injectContextIntoMarkdownFile(
+        filePath,
+        `before ${CONTEXT_TAG_OPEN} middle ${CONTEXT_TAG_OPEN} after`,
+      );
+
+      const content = readFileSync(filePath, 'utf-8');
+      const openCount = (content.match(/<claude-mem-context>/g) ?? []).length;
+      expect(openCount).toBe(1); // Only the wrapper tag, not the embedded ones
+      expect(content).toContain('before  middle  after');
+    });
+
+    it('strips embedded close tags from incoming context', () => {
+      const filePath = join(tempDir, 'CLAUDE.md');
+
+      injectContextIntoMarkdownFile(
+        filePath,
+        `something ${CONTEXT_TAG_CLOSE} weird here`,
+      );
+
+      const content = readFileSync(filePath, 'utf-8');
+      const closeCount = (content.match(/<\/claude-mem-context>/g) ?? []).length;
+      expect(closeCount).toBe(1); // Only the wrapper, not embedded
+      expect(content).toContain('something  weird here');
+    });
+
+    it('survives a re-inject after malicious tags were stripped', () => {
+      const filePath = join(tempDir, 'CLAUDE.md');
+
+      injectContextIntoMarkdownFile(filePath, `${CONTEXT_TAG_CLOSE} payload ${CONTEXT_TAG_OPEN}`);
+      injectContextIntoMarkdownFile(filePath, 'fresh');
+
+      const content = readFileSync(filePath, 'utf-8');
+      const openCount = (content.match(/<claude-mem-context>/g) ?? []).length;
+      const closeCount = (content.match(/<\/claude-mem-context>/g) ?? []).length;
+      expect(openCount).toBe(1);
+      expect(closeCount).toBe(1);
+      expect(content).toContain('fresh');
+      expect(content).not.toContain('payload');
+    });
+  });
+
+  describe('inverted / malformed tag pairs', () => {
+    it('strips broken markers and appends a fresh block when close precedes open', () => {
+      const filePath = join(tempDir, 'CLAUDE.md');
+      const initialContent = [
+        '# Project Instructions',
+        '',
+        `${CONTEXT_TAG_CLOSE}`,  // close before open — manual edit broke it
+        'orphan content',
+        `${CONTEXT_TAG_OPEN}`,
+        '',
+        '## Footer',
+      ].join('\n');
+      writeFileSync(filePath, initialContent);
+
+      injectContextIntoMarkdownFile(filePath, 'fresh context');
+
+      const content = readFileSync(filePath, 'utf-8');
+      const openCount = (content.match(/<claude-mem-context>/g) ?? []).length;
+      const closeCount = (content.match(/<\/claude-mem-context>/g) ?? []).length;
+      expect(openCount).toBe(1); // No leftover broken markers
+      expect(closeCount).toBe(1);
+      expect(content).toContain('# Project Instructions');
+      expect(content).toContain('## Footer');
+      expect(content).toContain('orphan content'); // user's text preserved
+      expect(content).toContain('fresh context');
+    });
+
+    it('does not grow the file unboundedly across repeated injects with malformed markers', () => {
+      const filePath = join(tempDir, 'CLAUDE.md');
+      const broken = `# Header\n${CONTEXT_TAG_CLOSE}\n${CONTEXT_TAG_OPEN}\n`;
+      writeFileSync(filePath, broken);
+
+      // Equal-length payloads so the assertion measures structural growth,
+      // not payload size differences.
+      injectContextIntoMarkdownFile(filePath, 'aaa');
+      const sizeAfterFirst = readFileSync(filePath, 'utf-8').length;
+
+      injectContextIntoMarkdownFile(filePath, 'bbb');
+      const sizeAfterSecond = readFileSync(filePath, 'utf-8').length;
+
+      injectContextIntoMarkdownFile(filePath, 'ccc');
+      const sizeAfterThird = readFileSync(filePath, 'utf-8').length;
+
+      // After the first repair-and-inject, subsequent injects with same-size
+      // payloads should produce a stable file size (file is now well-formed).
+      expect(sizeAfterSecond).toBe(sizeAfterFirst);
+      expect(sizeAfterThird).toBe(sizeAfterFirst);
+    });
+
+    it('handles orphaned open tag (no close anywhere) by repairing', () => {
+      const filePath = join(tempDir, 'CLAUDE.md');
+      writeFileSync(filePath, `# Header\n${CONTEXT_TAG_OPEN}\nlost\n`);
+
+      injectContextIntoMarkdownFile(filePath, 'recovered');
+
+      const content = readFileSync(filePath, 'utf-8');
+      const openCount = (content.match(/<claude-mem-context>/g) ?? []).length;
+      expect(openCount).toBe(1);
+      expect(content).toContain('recovered');
+    });
+  });
 });

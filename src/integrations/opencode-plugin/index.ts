@@ -239,9 +239,14 @@ export const ClaudeMemPlugin = async (ctx: OpenCodePluginContext) => {
             prompt: "",
           });
 
-          // Inject latest memory context into AGENTS.md so the
-          // new session sees memories from all past sessions.
-          injectContextIntoAgentsMd(projectName, ctx.directory);
+          // Best-effort fire-and-forget: fetch latest memory context and
+          // refresh AGENTS.md. This is async and not awaited — OpenCode
+          // reads AGENTS.md when assembling the session prompt, so the
+          // fresh context lands on disk for the *next* session start
+          // (the current session sees whatever was on disk before this
+          // event fired). `void` makes the floating-promise intent
+          // explicit; the inner try/catch swallows transient failures.
+          void injectContextIntoAgentsMd(projectName, ctx.directory);
           break;
         }
 
