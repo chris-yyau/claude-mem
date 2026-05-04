@@ -129,7 +129,12 @@ const MAX_SESSION_MAP_ENTRIES = 1000;
 const CONTEXT_TAG_OPEN = "<claude-mem-context>";
 const CONTEXT_TAG_CLOSE = "</claude-mem-context>";
 
-function getAgentsMdPath(): string {
+function getAgentsMdPath(projectDir?: string): string {
+  // Per-project AGENTS.md (mirrors Claude Code's per-project CLAUDE.md)
+  if (projectDir) {
+    return join(projectDir, "AGENTS.md");
+  }
+  // Global fallback
   if (process.env.OPENCODE_CONFIG_DIR) {
     return join(process.env.OPENCODE_CONFIG_DIR, "AGENTS.md");
   }
@@ -137,22 +142,19 @@ function getAgentsMdPath(): string {
 }
 
 /**
- * Fetch memory context for the current project and inject it into AGENTS.md.
+ * Fetch memory context for the current project and inject it into
+ * a per-project AGENTS.md file (written to the project directory).
  *
- * Only the active project's context is injected (replacing any previous
- * project's context) — this mirrors how Claude Code uses per-project
- * CLAUDE.md files. The global AGENTS.md always reflects the LAST project
- * you worked on, which is correct since OpenCode only loads one project
- * at a time.
+ * This mirrors how Claude Code uses per-project CLAUDE.md files.
  */
-async function injectContextIntoAgentsMd(projectName: string): Promise<void> {
+async function injectContextIntoAgentsMd(projectName: string, projectDir?: string): Promise<void> {
   try {
     const contextText = await workerGetText(
       `/api/context/inject?project=${encodeURIComponent(projectName)}`,
     );
     if (!contextText || !contextText.trim()) return;
 
-    const agentsMdPath = getAgentsMdPath();
+    const agentsMdPath = getAgentsMdPath(projectDir);
     let existing = "";
     if (existsSync(agentsMdPath)) {
       existing = readFileSync(agentsMdPath, "utf-8");
@@ -258,7 +260,7 @@ export const ClaudeMemPlugin = async (ctx: OpenCodePluginContext) => {
 
           // Inject latest memory context into AGENTS.md so the
           // new session sees memories from all past sessions.
-          injectContextIntoAgentsMd(projectName);
+          injectContextIntoAgentsMd(projectName, ctx.directory);
           break;
         }
 
