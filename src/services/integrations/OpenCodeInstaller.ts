@@ -57,14 +57,19 @@ export function findMcpServerPath(): string | null {
   return null;
 }
 
-function parseJsoncFile(filePath: string): unknown {
+interface OpenCodeConfig {
+  mcp?: Record<string, unknown>;
+  [key: string]: unknown;
+}
+
+function parseJsoncFile(filePath: string): OpenCodeConfig {
   const raw = readFileSync(filePath, 'utf-8');
   const stripped = raw
     .replace(/^\s*\/\/.*$/gm, '')      // line comments (// at line start)
     .replace(/\/\*[\s\S]*?\*\//g, '')   // block comments
     .replace(/,\s*}/g, '}')             // trailing comma before }
     .replace(/,\s*\]/g, ']');           // trailing comma before ]
-  return JSON.parse(stripped);
+  return JSON.parse(stripped) as OpenCodeConfig;
 }
 
 export function installOpenCodePlugin(): number {
@@ -132,7 +137,7 @@ export function registerOpenCodeMcp(): number {
   }
 
   try {
-    const config = parseJsoncFile(actualConfigPath) as Record<string, unknown>;
+    const config = parseJsoncFile(actualConfigPath);
 
     if (!config.mcp) {
       config.mcp = {};
@@ -178,9 +183,9 @@ export function unregisterOpenCodeMcp(): number {
   if (!actualConfigPath) return 0; // No config, nothing to unregister
 
   try {
-    const config = parseJsoncFile(actualConfigPath) as Record<string, unknown>;
+    const config = parseJsoncFile(actualConfigPath);
 
-    if (config.mcp?.['claude-mem']) {
+    if (config.mcp && config.mcp['claude-mem']) {
       delete config.mcp['claude-mem'];
       if (Object.keys(config.mcp).length === 0) {
         delete config.mcp;
