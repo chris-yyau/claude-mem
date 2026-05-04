@@ -137,9 +137,13 @@ function getAgentsMdPath(): string {
 }
 
 /**
- * Fetch memory context from the worker and inject it into AGENTS.md.
- * This gives OpenCode the same project-level memory context that Claude Code
- * gets via CLAUDE.md.
+ * Fetch memory context for the current project and inject it into AGENTS.md.
+ *
+ * Only the active project's context is injected (replacing any previous
+ * project's context) — this mirrors how Claude Code uses per-project
+ * CLAUDE.md files. The global AGENTS.md always reflects the LAST project
+ * you worked on, which is correct since OpenCode only loads one project
+ * at a time.
  */
 async function injectContextIntoAgentsMd(projectName: string): Promise<void> {
   try {
@@ -161,13 +165,13 @@ async function injectContextIntoAgentsMd(projectName: string): Promise<void> {
     const contextBlock = `${CONTEXT_TAG_OPEN}\n${contextText.trim()}\n${CONTEXT_TAG_CLOSE}`;
 
     if (tagStart !== -1 && tagEnd !== -1) {
-      // Replace existing context block
+      // Replace existing context block with current project's context
       newContent =
         existing.slice(0, tagStart) +
         contextBlock +
         existing.slice(tagEnd + CONTEXT_TAG_CLOSE.length);
     } else {
-      // Append after the header or at the top
+      // No context block yet — create one
       const headerEnd = existing.indexOf("\n\n");
       if (headerEnd !== -1 && existing.startsWith("# Claude-Mem")) {
         newContent =
