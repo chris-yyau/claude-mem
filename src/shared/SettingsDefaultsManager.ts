@@ -93,7 +93,7 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_OPENCODE_MODEL: '',  // Empty = use opencode's default model
     CLAUDE_MEM_OPENCODE_MAX_CONTEXT_MESSAGES: '20',  // Max messages in OpenCode context window
     CLAUDE_MEM_OPENCODE_MAX_TOKENS: '100000',  // Max estimated tokens (~100k safety limit)
-    CLAUDE_MEM_OPENCODE_SKIP_PERMISSIONS: 'false',  // Opt-in: skip opende permission prompts (DANGEROUS — only for trusted environments)
+    CLAUDE_MEM_OPENCODE_SKIP_PERMISSIONS: 'false',  // Opt-in: skip opencode permission prompts (DANGEROUS — only for trusted environments)
     CLAUDE_MEM_DATA_DIR: join(homedir(), '.claude-mem'),
     CLAUDE_MEM_LOG_LEVEL: 'INFO',
     CLAUDE_MEM_PYTHON_VERSION: '3.13',

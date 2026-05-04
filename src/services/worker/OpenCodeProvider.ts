@@ -582,7 +582,10 @@ export class OpenCodeProvider {
     // Empty string means use opencode's default model
     const model = settings.CLAUDE_MEM_OPENCODE_MODEL || '';
     const maxTokens = parseInt(settings.CLAUDE_MEM_OPENCODE_MAX_TOKENS, 10) || DEFAULT_MAX_ESTIMATED_TOKENS;
-    const skipPermissions = settings.CLAUDE_MEM_OPENCODE_SKIP_PERMISSIONS === 'true' || settings.CLAUDE_MEM_OPENCODE_SKIP_PERMISSIONS === true;
+    // Coerce to string so a manually-edited settings.json with a real
+    // boolean value (`"...": true`) and the typed string default ("true")
+    // both resolve identically without tripping strict-mode comparisons.
+    const skipPermissions = String(settings.CLAUDE_MEM_OPENCODE_SKIP_PERMISSIONS) === 'true';
 
     return { model, maxTokens, skipPermissions };
   }
