@@ -583,7 +583,7 @@ function mergeSettings(updates: Record<string, string>): boolean {
   }
 }
 
-type ProviderId = 'claude' | 'gemini' | 'openrouter';
+type ProviderId = 'claude' | 'gemini' | 'openrouter' | 'opencode';
 
 async function promptProvider(options: InstallOptions): Promise<ProviderId> {
   const initialProvider = (getSetting('CLAUDE_MEM_PROVIDER') as ProviderId) || 'claude';
@@ -598,6 +598,11 @@ async function promptProvider(options: InstallOptions): Promise<ProviderId> {
       if (options.provider === 'claude') {
         persistClaudeProvider();
         return 'claude';
+      }
+      if (options.provider === 'opencode') {
+        const wrote = mergeSettings({ CLAUDE_MEM_PROVIDER: 'opencode' });
+        if (wrote) log.info('Saved provider=opencode to ~/.claude-mem/settings.json');
+        return 'opencode';
       }
       const wrote = mergeSettings({ CLAUDE_MEM_PROVIDER: options.provider });
       if (wrote) log.info(`Saved provider=${options.provider} to ~/.claude-mem/settings.json`);
@@ -615,6 +620,7 @@ async function promptProvider(options: InstallOptions): Promise<ProviderId> {
       message: 'Which LLM provider should claude-mem use to compress observations?',
       options: [
         { value: 'claude', label: 'Claude Code auth (default — no extra setup, uses your existing Claude Code subscription)' },
+        { value: 'opencode', label: 'OpenCode CLI (uses your local opencode binary — no API key needed)' },
         { value: 'gemini', label: 'Gemini API key (free tier available — fast and cheap)' },
         { value: 'openrouter', label: 'OpenRouter API key (BYO model — wide selection of frontier and open models)' },
       ],
@@ -633,9 +639,18 @@ async function promptProvider(options: InstallOptions): Promise<ProviderId> {
     return 'claude';
   }
 
-  const providerLabel = selectedProvider === 'gemini' ? 'Gemini' : 'OpenRouter';
+  if (selectedProvider === 'opencode') {
+    const wrote = mergeSettings({ CLAUDE_MEM_PROVIDER: 'opencode' });
+    if (wrote) log.info('Saved provider=opencode to ~/.claude-mem/settings.json');
+    log.info('OpenCode provider selected — no API key needed, uses your local opencode binary.');
+    return 'opencode';
+  }
+
+  const providerLabel = selectedProvider === 'gemini' ? 'Gemini' : selectedProvider === 'opencode' ? 'OpenCode' : 'OpenRouter';
   const keyEnvName = selectedProvider === 'gemini'
     ? 'CLAUDE_MEM_GEMINI_API_KEY'
+    : selectedProvider === 'opencode'
+    ? 'CLAUDE_MEM_OPENCODE_MODEL'  // OpenCode doesn't need an API key, just an optional model
     : 'CLAUDE_MEM_OPENROUTER_API_KEY';
 
   const existingKey = getSetting(keyEnvName as keyof SettingsDefaults) as string | undefined;
@@ -717,7 +732,7 @@ async function promptClaudeModel(options: InstallOptions): Promise<void> {
 
 export interface InstallOptions {
   ide?: string;
-  provider?: 'claude' | 'gemini' | 'openrouter';
+  provider?: 'claude' | 'gemini' | 'openrouter' | 'opencode';
   model?: string;
   noAutoStart?: boolean;
 }

@@ -62,6 +62,7 @@ import { ClaudeProvider, classifyClaudeError } from './worker/ClaudeProvider.js'
 import type { WorkerRef } from './worker/agents/types.js';
 import { GeminiProvider, classifyGeminiError, isGeminiSelected, isGeminiAvailable } from './worker/GeminiProvider.js';
 import { OpenRouterProvider, classifyOpenRouterError, isOpenRouterSelected, isOpenRouterAvailable } from './worker/OpenRouterProvider.js';
+import { OpenCodeProvider, classifyOpenCodeError, isOpenCodeSelected, isOpenCodeAvailable } from './worker/OpenCodeProvider.js';
 import { ClassifiedProviderError, isClassified, type ProviderErrorClass } from './worker/provider-errors.js';
 import { PaginationHelper } from './worker/PaginationHelper.js';
 import { SettingsManager } from './worker/SettingsManager.js';
@@ -119,6 +120,7 @@ export class WorkerService implements WorkerRef {
   private sdkAgent: ClaudeProvider;
   private geminiAgent: GeminiProvider;
   private openRouterAgent: OpenRouterProvider;
+  private openCodeAgent: OpenCodeProvider;
   private paginationHelper: PaginationHelper;
   private settingsManager: SettingsManager;
   private sessionEventBroadcaster: SessionEventBroadcaster;
@@ -152,6 +154,7 @@ export class WorkerService implements WorkerRef {
     this.sdkAgent = new ClaudeProvider(this.dbManager, this.sessionManager);
     this.geminiAgent = new GeminiProvider(this.dbManager, this.sessionManager);
     this.openRouterAgent = new OpenRouterProvider(this.dbManager, this.sessionManager);
+    this.openCodeAgent = new OpenCodeProvider(this.dbManager, this.sessionManager);
 
     this.paginationHelper = new PaginationHelper(this.dbManager);
     this.settingsManager = new SettingsManager(this.dbManager);
@@ -184,7 +187,8 @@ export class WorkerService implements WorkerRef {
       workerPath: __filename,
       getAiStatus: () => {
         let provider = 'claude';
-        if (isOpenRouterSelected() && isOpenRouterAvailable()) provider = 'openrouter';
+        if (isOpenCodeSelected() && isOpenCodeAvailable()) provider = 'opencode';
+        else if (isOpenRouterSelected() && isOpenRouterAvailable()) provider = 'openrouter';
         else if (isGeminiSelected() && isGeminiAvailable()) provider = 'gemini';
         return {
           provider,
@@ -494,7 +498,10 @@ export class WorkerService implements WorkerRef {
     });
   }
 
-  private getActiveAgent(): ClaudeProvider | GeminiProvider | OpenRouterProvider {
+  private getActiveAgent(): ClaudeProvider | GeminiProvider | OpenRouterProvider | OpenCodeProvider {
+    if (isOpenCodeSelected() && isOpenCodeAvailable()) {
+      return this.openCodeAgent;
+    }
     if (isOpenRouterSelected() && isOpenRouterAvailable()) {
       return this.openRouterAgent;
     }
@@ -515,7 +522,7 @@ export class WorkerService implements WorkerRef {
    */
   private reclassifyAtDispatch(
     error: unknown,
-    agent: ClaudeProvider | GeminiProvider | OpenRouterProvider
+    agent: ClaudeProvider | GeminiProvider | OpenRouterProvider | OpenCodeProvider
   ): ClassifiedProviderError | null {
     try {
       if (agent instanceof ClaudeProvider) {
@@ -527,6 +534,9 @@ export class WorkerService implements WorkerRef {
       }
       if (agent instanceof OpenRouterProvider) {
         return classifyOpenRouterError({ cause: error });
+      }
+      if (agent instanceof OpenCodeProvider) {
+        return classifyOpenCodeError({ cause: error });
       }
     } catch {
       // If the classifier itself throws, fall back to unclassified.
@@ -690,6 +700,22 @@ export class WorkerService implements WorkerRef {
       const syntheticId = `fallback-${sessionDbId}-${Date.now()}`;
       session.memorySessionId = syntheticId;
       this.dbManager.getSessionStore().updateMemorySessionId(sessionDbId, syntheticId);
+    }
+
+    if (isOpenCodeAvailable()) {
+      try {
+        await this.openCodeAgent.startSession(session, this);
+        return;
+      } catch (e) {
+        if (e instanceof Error) {
+          logger.warn('WORKER', 'Fallback OpenCode failed, trying Gemini', {
+            sessionId: sessionDbId,
+          });
+          logger.error('WORKER', 'OpenCode fallback error detail', { sessionId: sessionDbId }, e);
+        } else {
+          logger.error('WORKER', 'OpenCode fallback failed with non-Error', { sessionId: sessionDbId }, new Error(String(e)));
+        }
+      }
     }
 
     if (isGeminiAvailable()) {
