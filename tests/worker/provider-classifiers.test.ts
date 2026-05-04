@@ -6,6 +6,7 @@ import {
 import { classifyClaudeError } from '../../src/services/worker/ClaudeProvider.js';
 import { classifyGeminiError } from '../../src/services/worker/GeminiProvider.js';
 import { classifyOpenRouterError } from '../../src/services/worker/OpenRouterProvider.js';
+import { classifyOpenCodeError } from '../../src/services/worker/OpenCodeProvider.js';
 
 // Hard cases per F4 spec — provider-specific classifiers must map raw HTTP
 // shapes / SDK errors to ClassifiedProviderError with the right kind.
@@ -234,5 +235,101 @@ describe('classifyClaudeError', () => {
   it('classifies unknown error as transient (preserve old default)', () => {
     const err = classifyClaudeError(new Error('something weird happened'));
     expect(err.kind).toBe('transient');
+  });
+});
+
+describe('classifyOpenCodeError', () => {
+  it('classifies ENOENT spawn failure as unrecoverable (binary not on PATH)', () => {
+    const cause = Object.assign(new Error('spawn opencode ENOENT'), { code: 'ENOENT' });
+    const err = classifyOpenCodeError({ cause });
+    expect(isClassified(err)).toBe(true);
+    expect(err.kind).toBe('unrecoverable');
+    expect(err.message).toContain('opencode');
+  });
+
+  it('classifies stderr containing "authentication" as auth_invalid', () => {
+    const err = classifyOpenCodeError({
+      exitCode: 1,
+      stderr: 'Error: Authentication failed for provider',
+      cause: new Error('exit 1'),
+    });
+    expect(err.kind).toBe('auth_invalid');
+  });
+
+  it('classifies stderr containing "invalid api key" as auth_invalid', () => {
+    const err = classifyOpenCodeError({
+      exitCode: 1,
+      stderr: 'invalid api key for openai-compatible',
+      cause: new Error('exit 1'),
+    });
+    expect(err.kind).toBe('auth_invalid');
+  });
+
+  it('classifies stderr containing "rate limit" as rate_limit', () => {
+    const err = classifyOpenCodeError({
+      exitCode: 1,
+      stderr: 'rate limit exceeded, try again later',
+      cause: new Error('exit 1'),
+    });
+    expect(err.kind).toBe('rate_limit');
+  });
+
+  it('classifies stderr containing "429" as rate_limit', () => {
+    const err = classifyOpenCodeError({
+      exitCode: 1,
+      stderr: 'HTTP 429: Too Many Requests',
+      cause: new Error('exit 1'),
+    });
+    expect(err.kind).toBe('rate_limit');
+  });
+
+  it('classifies stderr containing "quota exceeded" as quota_exhausted', () => {
+    const err = classifyOpenCodeError({
+      exitCode: 1,
+      stderr: 'monthly quota exceeded for free tier',
+      cause: new Error('exit 1'),
+    });
+    expect(err.kind).toBe('quota_exhausted');
+  });
+
+  it('classifies stderr containing "context window" as unrecoverable', () => {
+    const err = classifyOpenCodeError({
+      exitCode: 1,
+      stderr: 'prompt is too long: exceeds context window of 200000 tokens',
+      cause: new Error('exit 1'),
+    });
+    expect(err.kind).toBe('unrecoverable');
+  });
+
+  it('classifies stderr containing "command not found" as unrecoverable', () => {
+    const err = classifyOpenCodeError({
+      exitCode: 127,
+      stderr: 'opencode: command not found',
+      cause: new Error('exit 127'),
+    });
+    expect(err.kind).toBe('unrecoverable');
+  });
+
+  it('classifies non-zero exit with no recognizable stderr as transient', () => {
+    const err = classifyOpenCodeError({
+      exitCode: 1,
+      stderr: 'something obscure went wrong',
+      cause: new Error('exit 1'),
+    });
+    expect(err.kind).toBe('transient');
+    expect(err.message).toContain('1');
+  });
+
+  it('classifies missing exitCode + generic cause as transient (preserves retry default)', () => {
+    const err = classifyOpenCodeError({
+      cause: new Error('connection reset by peer'),
+    });
+    expect(err.kind).toBe('transient');
+  });
+
+  it('preserves the original cause for upstream debugging', () => {
+    const cause = new Error('original network error');
+    const err = classifyOpenCodeError({ exitCode: 1, stderr: 'rate limit hit', cause });
+    expect(err.cause).toBe(cause);
   });
 });

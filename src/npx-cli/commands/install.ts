@@ -740,6 +740,7 @@ function listOpenCodeModels(): string[] {
       encoding: 'utf-8',
       timeout: 5000,
       stdio: ['ignore', 'pipe', 'ignore'],
+      windowsHide: true,
     });
     return stdout
       .split('\n')

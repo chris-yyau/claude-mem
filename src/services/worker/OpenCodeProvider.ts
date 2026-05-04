@@ -1,4 +1,5 @@
-import { spawn, execSync } from 'child_process';
+import { execFileSync } from 'child_process';
+import { spawnHidden } from '../../shared/spawn.js';
 import { DatabaseManager } from './DatabaseManager.js';
 import { SessionManager } from './SessionManager.js';
 import { logger } from '../../utils/logger.js';
@@ -363,13 +364,20 @@ export class OpenCodeProvider {
           args.push('--dangerously-skip-permissions');
         }
 
-        const child = spawn('opencode', args, {
+        const child = spawnHidden('opencode', args, {
           stdio: ['pipe', 'pipe', 'pipe'],
           env: { ...process.env },
         });
 
+        // Stdio is explicitly 'pipe' for all three streams above, so the
+        // narrowed `non-null` assertions hold; spawnHidden's loose return
+        // type doesn't carry that constraint.
+        const childStdin = child.stdin!;
+        const childStdout = child.stdout!;
+        const childStderr = child.stderr!;
+
         // Send prompt via stdin to avoid ARG_MAX issues
-        child.stdin.on('error', (err) => {
+        childStdin.on('error', (err) => {
           // EPIPE or similar — child process may have exited before
           // consuming stdin (auth failure, bad args, etc.). Stdin errors
           // are expected in error paths; the close handler will reject.
@@ -378,23 +386,23 @@ export class OpenCodeProvider {
             code: (err as any).code,
           });
         });
-        child.stdin.write(prompt, (writeErr) => {
+        childStdin.write(prompt, (writeErr) => {
           if (writeErr && (writeErr as any).code === 'EPIPE') {
             logger.debug('SDK', 'OpenCode stdin write EPIPE (handled)', {
               sessionId: undefined,
             });
           }
         });
-        child.stdin.end();
+        childStdin.end();
 
         let stdout = '';
         let stderr = '';
 
-        child.stdout.on('data', (data: Buffer) => {
+        childStdout.on('data', (data: Buffer) => {
           stdout += data.toString();
         });
 
-        child.stderr.on('data', (data: Buffer) => {
+        childStderr.on('data', (data: Buffer) => {
           stderr += data.toString();
         });
 
@@ -509,33 +517,37 @@ export class OpenCodeProvider {
           throw new Error(`OpenCode error event: ${errorName} - ${errorMessage}`);
         }
 
-        // Fallback: Claude-style assistant messages
+        // Fallback: Claude-style assistant messages.
+        // Pick the FIRST non-empty source so we don't double-count when the
+        // upstream emits both `event.message.content` and `event.content`
+        // for the same payload (which some adapter shapes do).
         if (event.type === 'assistant' || event.type === 'message') {
+          let extracted = '';
           if (event.message?.content) {
             if (typeof event.message.content === 'string') {
-              content += event.message.content;
+              extracted = event.message.content;
             } else if (Array.isArray(event.message.content)) {
               for (const block of event.message.content) {
                 if (block.type === 'text' && block.text) {
-                  content += block.text;
+                  extracted += block.text;
                 }
               }
             }
           }
-          if (event.content && typeof event.content === 'string') {
-            content += event.content;
+          if (!extracted && event.content && typeof event.content === 'string') {
+            extracted = event.content;
           }
-          if (event.text && typeof event.text === 'string') {
-            content += event.text;
+          if (!extracted && event.text && typeof event.text === 'string') {
+            extracted = event.text;
           }
+          content += extracted;
         }
 
-        // Fallback: result content
+        // Fallback: result content (also choose first non-empty source).
         if (event.type === 'result') {
           if (event.result && typeof event.result === 'string') {
             content += event.result;
-          }
-          if (event.content && typeof event.content === 'string') {
+          } else if (event.content && typeof event.content === 'string') {
             content += event.content;
           }
         }
@@ -592,18 +604,48 @@ export class OpenCodeProvider {
 }
 
 let _openCodeAvailableCache: boolean | null = null;
+let _missingBinaryWarned = false;
+
+/**
+ * Reset the cached availability check. Tests use this; production code
+ * shouldn't need it (the cache is intentionally process-lifetime).
+ */
+export function resetOpenCodeAvailableCache(): void {
+  _openCodeAvailableCache = null;
+  _missingBinaryWarned = false;
+}
 
 export function isOpenCodeAvailable(): boolean {
   if (_openCodeAvailableCache !== null) {
     return _openCodeAvailableCache;
   }
   try {
-    const cmd = process.platform === 'win32' ? 'where opencode' : 'which opencode';
-    execSync(cmd, { stdio: 'pipe' });
+    // execFileSync (no shell) — args are static so injection isn't a real
+    // risk, but using execFile keeps the call consistent with project-wide
+    // PATH-lookup conventions and avoids `cmd /c` flashing a console window
+    // on Windows. windowsHide on stdio is the explicit hide.
+    const lookupCmd = process.platform === 'win32' ? 'where' : 'which';
+    execFileSync(lookupCmd, ['opencode'], {
+      stdio: ['ignore', 'ignore', 'ignore'],
+      windowsHide: true,
+      timeout: 5000,
+    });
     _openCodeAvailableCache = true;
     return true;
   } catch {
     _openCodeAvailableCache = false;
+    // One-shot warning when the user selected opencode but the binary isn't
+    // on PATH — otherwise the worker silently falls back to another provider
+    // and the user wonders why their selection isn't taking effect.
+    if (!_missingBinaryWarned && isOpenCodeSelected()) {
+      _missingBinaryWarned = true;
+      logger.warn(
+        'SDK',
+        "CLAUDE_MEM_PROVIDER=opencode but the 'opencode' binary is not on PATH. " +
+        'Falling back to other providers. Install opencode (https://github.com/sst/opencode) and restart the worker, ' +
+        'or change CLAUDE_MEM_PROVIDER in ~/.claude-mem/settings.json.',
+      );
+    }
     return false;
   }
 }
