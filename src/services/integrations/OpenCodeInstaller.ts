@@ -122,9 +122,14 @@ export function registerOpenCodeMcp(): number {
   }
 
   try {
-    // Remove JS/TS style comments before parsing
+    // Remove JS/TS style comments before parsing.
+    // Only strip // at start of lines (ignoring whitespace) to avoid matching https:// URLs.
     const raw = readFileSync(actualConfigPath, 'utf-8');
-    const stripped = raw.replace(/\/\/.*$/gm, '').replace(/\/\*[\s\S]*?\*\//g, '');
+    const stripped = raw
+      .replace(/^\s*\/\/.*$/gm, '')      // line comments (// at line start)
+      .replace(/\/\*[\s\S]*?\*\//g, '')   // block comments
+      .replace(/,\s*}/g, '}')             // trailing comma before }
+      .replace(/,\s*\]/g, ']');           // trailing comma before ]
     const config = JSON.parse(stripped);
 
     if (!config.mcp) {
@@ -168,7 +173,7 @@ export function unregisterOpenCodeMcp(): number {
 
   try {
     const raw = readFileSync(actualConfigPath, 'utf-8');
-    const stripped = raw.replace(/\/\/.*$/gm, '').replace(/\/\*[\s\S]*?\*\//g, '');
+    const stripped = raw.replace(/^\s*\/\/.*$/gm, '').replace(/\/\*[\s\S]*?\*\//g, '');
     const config = JSON.parse(stripped);
 
     if (config.mcp?.['claude-mem']) {
@@ -335,7 +340,7 @@ export function checkOpenCodeStatus(): number {
   if (actualConfigPath) {
     try {
       const raw = readFileSync(actualConfigPath, 'utf-8');
-      const stripped = raw.replace(/\/\/.*$/gm, '').replace(/\/\*[\s\S]*?\*\//g, '');
+      const stripped = raw.replace(/^\s*\/\/.*$/gm, '').replace(/\/\*[\s\S]*?\*\//g, '');
       const config = JSON.parse(stripped);
       console.log(`  MCP registered: ${config.mcp?.['claude-mem'] ? 'yes' : 'no'}`);
     } catch {
