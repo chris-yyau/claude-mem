@@ -4,6 +4,19 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [Unreleased]
+
+### Added
+- **OpenCode MCP server auto-registration** — `npx claude-mem install --ide opencode` now registers `claude-mem` as a local MCP server in `~/.config/opencode/opencode.jsonc` (or `.json`). `uninstall` removes it. Brings OpenCode to parity with Cursor / Windsurf / Claude Code, which already auto-register. Registration uses `process.execPath` (not literal `'node'`) so it works under nvm / npx-installed Node.
+- Status check (`checkOpenCodeStatus`) reports MCP registration state.
+
+### Changed
+- `OpenCodeInstaller.findMcpServerPath` now imports the canonical helper from `CursorHooksInstaller` rather than duplicating its lookup logic.
+- Config writes use atomic tmp-then-rename (`atomicWriteJson`) so a crash mid-write cannot corrupt the user's `opencode.jsonc`.
+
+### Notes
+- **`.jsonc` comment loss:** the installer round-trips opencode config through `JSON.stringify`, which strips comments and trailing commas. A console + structured warning fires before each destructive write so users with hand-edited `opencode.jsonc` are notified. A real JSONC-preserving writer (e.g., `jsonc-parser`'s edit API) is tracked for follow-up.
+
 ## [12.6.0] - 2026-05-04
 
 ## Highlights
