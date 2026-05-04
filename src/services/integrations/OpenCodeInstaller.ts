@@ -6,6 +6,7 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync, copyFileSync, unlin
 import { logger } from '../../utils/logger.js';
 import { CONTEXT_TAG_OPEN, CONTEXT_TAG_CLOSE, injectContextIntoMarkdownFile } from '../../utils/context-injection.js';
 import { getWorkerPort } from '../../shared/worker-utils.js';
+import { MARKETPLACE_ROOT } from '../../shared/paths.js';
 
 export function getOpenCodeConfigDirectory(): string {
   if (process.env.OPENCODE_CONFIG_DIR) {
@@ -42,6 +43,17 @@ export function findBuiltPluginPath(): string | null {
     }
   }
 
+  return null;
+}
+
+export function findMcpServerPath(): string | null {
+  const possiblePaths = [
+    path.join(MARKETPLACE_ROOT, 'plugin', 'scripts', 'mcp-server.cjs'),
+    path.join(process.cwd(), 'plugin', 'scripts', 'mcp-server.cjs'),
+  ];
+  for (const p of possiblePaths) {
+    if (existsSync(p)) return p;
+  }
   return null;
 }
 
@@ -83,6 +95,95 @@ export function injectContextIntoAgentsMd(contextContent: string): number {
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     console.error(`Failed to inject context into AGENTS.md: ${message}`);
+    return 1;
+  }
+}
+
+export function registerOpenCodeMcp(): number {
+  const mcpServerPath = findMcpServerPath();
+  if (!mcpServerPath) {
+    console.error('Could not find MCP server script for OpenCode');
+    console.error('   Expected at: ~/.claude/plugins/marketplaces/thedotmack/plugin/scripts/mcp-server.cjs');
+    return 1;
+  }
+
+  const configDir = getOpenCodeConfigDirectory();
+  const configPath = path.join(configDir, 'opencode.jsonc');
+  const configJsonPath = path.join(configDir, 'opencode.json');
+
+  // Try opencode.jsonc first, then opencode.json
+  let actualConfigPath: string | null = null;
+  if (existsSync(configPath)) actualConfigPath = configPath;
+  else if (existsSync(configJsonPath)) actualConfigPath = configJsonPath;
+
+  if (!actualConfigPath) {
+    console.error(`Could not find opencode config file. Expected at: ${configPath} or ${configJsonPath}`);
+    return 1;
+  }
+
+  try {
+    // Remove JS/TS style comments before parsing
+    const raw = readFileSync(actualConfigPath, 'utf-8');
+    const stripped = raw.replace(/\/\/.*$/gm, '').replace(/\/\*[\s\S]*?\*\//g, '');
+    const config = JSON.parse(stripped);
+
+    if (!config.mcp) {
+      config.mcp = {};
+    }
+
+    // Don't overwrite existing config if already present
+    if (config.mcp['claude-mem']) {
+      console.log('  claude-mem MCP server already registered in opencode config');
+      return 0;
+    }
+
+    config.mcp['claude-mem'] = {
+      type: 'local',
+      command: ['node', mcpServerPath],
+      enabled: true,
+    };
+
+    // Write back preserving .jsonc extension if that's what we found
+    writeFileSync(actualConfigPath, JSON.stringify(config, null, 2) + '\n');
+    console.log(`  Registered claude-mem MCP server in ${path.basename(actualConfigPath)}`);
+    logger.info('OPENCODE', 'MCP server registered', { configPath: actualConfigPath });
+    return 0;
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    console.error(`Failed to register claude-mem MCP in opencode config: ${msg}`);
+    return 1;
+  }
+}
+
+export function unregisterOpenCodeMcp(): number {
+  const configDir = getOpenCodeConfigDirectory();
+  const configPath = path.join(configDir, 'opencode.jsonc');
+  const configJsonPath = path.join(configDir, 'opencode.json');
+
+  let actualConfigPath: string | null = null;
+  if (existsSync(configPath)) actualConfigPath = configPath;
+  else if (existsSync(configJsonPath)) actualConfigPath = configJsonPath;
+
+  if (!actualConfigPath) return 0; // No config, nothing to unregister
+
+  try {
+    const raw = readFileSync(actualConfigPath, 'utf-8');
+    const stripped = raw.replace(/\/\/.*$/gm, '').replace(/\/\*[\s\S]*?\*\//g, '');
+    const config = JSON.parse(stripped);
+
+    if (config.mcp?.['claude-mem']) {
+      delete config.mcp['claude-mem'];
+      if (Object.keys(config.mcp).length === 0) {
+        delete config.mcp;
+      }
+      writeFileSync(actualConfigPath, JSON.stringify(config, null, 2) + '\n');
+      console.log(`  Removed claude-mem MCP server from ${path.basename(actualConfigPath)}`);
+      logger.info('OPENCODE', 'MCP server unregistered', { configPath: actualConfigPath });
+    }
+    return 0;
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    console.error(`Failed to unregister claude-mem MCP from opencode config: ${msg}`);
     return 1;
   }
 }
@@ -191,6 +292,11 @@ export function uninstallOpenCodePlugin(): number {
     }
   }
 
+  const mcpUninstallResult = unregisterOpenCodeMcp();
+  if (mcpUninstallResult !== 0) {
+    hasErrors = true;
+  }
+
   return hasErrors ? 1 : 0;
 }
 
@@ -219,6 +325,26 @@ export function checkOpenCodeStatus(): number {
     console.log(`  Exists: no`);
   }
 
+  const mcpServerPath = findMcpServerPath();
+  console.log(`MCP server script: ${mcpServerPath || 'not found'}`);
+
+  // Check if registered in opencode config
+  const configPath = path.join(configDirectory, 'opencode.jsonc');
+  const configJsonPath = path.join(configDirectory, 'opencode.json');
+  let actualConfigPath = existsSync(configPath) ? configPath : existsSync(configJsonPath) ? configJsonPath : null;
+  if (actualConfigPath) {
+    try {
+      const raw = readFileSync(actualConfigPath, 'utf-8');
+      const stripped = raw.replace(/\/\/.*$/gm, '').replace(/\/\*[\s\S]*?\*\//g, '');
+      const config = JSON.parse(stripped);
+      console.log(`  MCP registered: ${config.mcp?.['claude-mem'] ? 'yes' : 'no'}`);
+    } catch {
+      console.log(`  MCP registered: could not parse config`);
+    }
+  } else {
+    console.log(`  MCP registered: no config file found`);
+  }
+
   console.log('');
   return 0;
 }
@@ -229,6 +355,13 @@ export async function installOpenCodeIntegration(): Promise<number> {
   const pluginResult = installOpenCodePlugin();
   if (pluginResult !== 0) {
     return pluginResult;
+  }
+
+  const mcpResult = registerOpenCodeMcp();
+  if (mcpResult !== 0) {
+    console.warn('  MCP server registration failed — search/timeline tools will not be available in OpenCode.');
+    console.warn('  You can register it manually by adding this to ~/.config/opencode/opencode.jsonc under "mcp":');
+    console.warn(`  "claude-mem": { "type": "local", "command": ["node", "${findMcpServerPath() || 'PATH_TO_mcp-server.cjs'}"], "enabled": true }`);
   }
 
   const placeholderContext = `# Memory Context from Past Sessions
