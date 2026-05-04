@@ -488,6 +488,12 @@ export class OpenCodeProvider {
     let inputTokens = 0;
     let outputTokens = 0;
     let hasStepFinishTokens = false;
+    // Track whether the native opencode shape already contributed content
+    // (text / assistant / message events). Some adapters ALSO emit a final
+    // `result` event with the same payload as a tail summary — appending it
+    // would double the output. The result fallback only fires when nothing
+    // earlier in the stream produced content.
+    let hasNativeContent = false;
 
     for (const line of lines) {
       try {
@@ -496,6 +502,7 @@ export class OpenCodeProvider {
         // OpenCode native JSON format: { type: "text", part: { text: "..." } }
         if (event.type === 'text' && event.part?.text) {
           content += event.part.text;
+          hasNativeContent = true;
           // Extract tokens from text event part (only if no step_finish seen yet)
           if (event.part.tokens && !hasStepFinishTokens) {
             inputTokens += event.part.tokens.input || event.part.tokens.prompt_tokens || 0;
@@ -540,11 +547,17 @@ export class OpenCodeProvider {
           if (!extracted && event.text && typeof event.text === 'string') {
             extracted = event.text;
           }
-          content += extracted;
+          if (extracted) {
+            content += extracted;
+            hasNativeContent = true;
+          }
         }
 
-        // Fallback: result content (also choose first non-empty source).
-        if (event.type === 'result') {
+        // Fallback: `result` event content. Only contributes when nothing
+        // earlier in the stream produced content — adapters that emit a
+        // tail-summary `result` after `text` events would otherwise double
+        // the output.
+        if (event.type === 'result' && !hasNativeContent) {
           if (event.result && typeof event.result === 'string') {
             content += event.result;
           } else if (event.content && typeof event.content === 'string') {
