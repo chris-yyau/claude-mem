@@ -702,7 +702,7 @@ export class WorkerService implements WorkerRef {
       this.dbManager.getSessionStore().updateMemorySessionId(sessionDbId, syntheticId);
     }
 
-    if (isOpenCodeAvailable()) {
+    if (isOpenCodeSelected() && isOpenCodeAvailable()) {
       try {
         await this.openCodeAgent.startSession(session, this);
         return;
