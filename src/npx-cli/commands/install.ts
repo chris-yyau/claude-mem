@@ -646,11 +646,9 @@ async function promptProvider(options: InstallOptions): Promise<ProviderId> {
     return 'opencode';
   }
 
-  const providerLabel = selectedProvider === 'gemini' ? 'Gemini' : selectedProvider === 'opencode' ? 'OpenCode' : 'OpenRouter';
+  const providerLabel = selectedProvider === 'gemini' ? 'Gemini' : 'OpenRouter';
   const keyEnvName = selectedProvider === 'gemini'
     ? 'CLAUDE_MEM_GEMINI_API_KEY'
-    : selectedProvider === 'opencode'
-    ? 'CLAUDE_MEM_OPENCODE_MODEL'  // OpenCode doesn't need an API key, just an optional model
     : 'CLAUDE_MEM_OPENROUTER_API_KEY';
 
   const existingKey = getSetting(keyEnvName as keyof SettingsDefaults) as string | undefined;

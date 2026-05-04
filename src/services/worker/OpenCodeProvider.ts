@@ -32,6 +32,15 @@ export function classifyOpenCodeError(input: {
   const stderr = input.stderr ?? '';
   const lower = stderr.toLowerCase();
 
+  // Check cause for spawn errors (ENOENT = binary not found)
+  const causeCode = (input.cause as any)?.code;
+  if (causeCode === 'ENOENT') {
+    return new ClassifiedProviderError(
+      `OpenCode executable not found. Ensure 'opencode' is installed and in PATH.`,
+      { kind: 'unrecoverable', cause: input.cause },
+    );
+  }
+
   // Auth failures
   if (
     lower.includes('authentication') ||
@@ -104,7 +113,7 @@ export class OpenCodeProvider {
   }
 
   async startSession(session: ActiveSession, worker?: WorkerRef): Promise<void> {
-    const { model } = this.getOpenCodeConfig();
+    const { model, maxContextMessages, maxTokens, skipPermissions } = this.getOpenCodeConfig();
 
     if (!session.memorySessionId) {
       const syntheticMemorySessionId = `opencode-${session.contentSessionId}-${Date.now()}`;
@@ -122,7 +131,7 @@ export class OpenCodeProvider {
     session.conversationHistory.push({ role: 'user', content: initPrompt });
 
     try {
-      const initResponse = await this.queryOpenCode(initPrompt, model);
+      const initResponse = await this.queryOpenCode(initPrompt, model, skipPermissions, maxContextMessages, maxTokens);
       await this.handleInitResponse(initResponse, session, worker, model);
     } catch (error: unknown) {
       if (error instanceof Error) {
@@ -138,7 +147,7 @@ export class OpenCodeProvider {
 
     try {
       for await (const message of this.sessionManager.getMessageIterator(session.sessionDbId)) {
-        lastCwd = await this.processOneMessage(session, message, lastCwd, model, worker, mode);
+        lastCwd = await this.processOneMessage(session, message, lastCwd, model, worker, mode, skipPermissions, maxContextMessages, maxTokens);
       }
     } catch (error: unknown) {
       if (error instanceof Error) {
@@ -193,7 +202,10 @@ export class OpenCodeProvider {
     lastCwd: string | undefined,
     model: string,
     worker: WorkerRef | undefined,
-    mode: ModeConfig
+    mode: ModeConfig,
+    skipPermissions: boolean,
+    maxContextMessages: number,
+    maxTokens: number
   ): Promise<string | undefined> {
     this.prepareMessageMetadata(session, message);
 
@@ -204,11 +216,11 @@ export class OpenCodeProvider {
 
     if (message.type === 'observation') {
       await this.processObservationMessage(
-        session, message, originalTimestamp, lastCwd, model, worker, mode
+        session, message, originalTimestamp, lastCwd, model, worker, mode, skipPermissions, maxContextMessages, maxTokens
       );
     } else if (message.type === 'summarize') {
       await this.processSummaryMessage(
-        session, message, originalTimestamp, lastCwd, model, worker, mode
+        session, message, originalTimestamp, lastCwd, model, worker, mode, skipPermissions, maxContextMessages, maxTokens
       );
     }
 
@@ -222,7 +234,10 @@ export class OpenCodeProvider {
     lastCwd: string | undefined,
     model: string,
     worker: WorkerRef | undefined,
-    _mode: ModeConfig
+    _mode: ModeConfig,
+    skipPermissions: boolean,
+    maxContextMessages: number,
+    maxTokens: number
   ): Promise<void> {
     if (message.prompt_number !== undefined) {
       session.lastPromptNumber = message.prompt_number;
@@ -242,7 +257,7 @@ export class OpenCodeProvider {
     });
 
     session.conversationHistory.push({ role: 'user', content: obsPrompt });
-    const obsResponse = await this.queryOpenCode(obsPrompt, model);
+    const obsResponse = await this.queryOpenCode(obsPrompt, model, skipPermissions, maxContextMessages, maxTokens);
 
     let tokensUsed = 0;
     if (obsResponse.content) {
@@ -265,7 +280,10 @@ export class OpenCodeProvider {
     lastCwd: string | undefined,
     model: string,
     worker: WorkerRef | undefined,
-    mode: ModeConfig
+    mode: ModeConfig,
+    skipPermissions: boolean,
+    maxContextMessages: number,
+    maxTokens: number
   ): Promise<void> {
     if (!session.memorySessionId) {
       throw new Error('Cannot process summary: memorySessionId not yet captured. This session may need to be reinitialized.');
@@ -280,7 +298,7 @@ export class OpenCodeProvider {
     }, mode);
 
     session.conversationHistory.push({ role: 'user', content: summaryPrompt });
-    const summaryResponse = await this.queryOpenCode(summaryPrompt, model);
+    const summaryResponse = await this.queryOpenCode(summaryPrompt, model, skipPermissions, maxContextMessages, maxTokens);
 
     let tokensUsed = 0;
     if (summaryResponse.content) {
@@ -313,13 +331,16 @@ export class OpenCodeProvider {
   /**
    * Query the OpenCode CLI with a prompt and return the response.
    *
-   * Uses `opencode run "prompt" --format json` to get a structured response.
+   * Uses `opencode run --format json` with the prompt sent via stdin.
    * The --format json flag outputs JSON events, from which we extract the
    * assistant's text content.
    */
   private async queryOpenCode(
     prompt: string,
-    model: string
+    model: string,
+    skipPermissions: boolean,
+    maxContextMessages: number,
+    maxTokens: number
   ): Promise<{ content: string; tokensUsed?: number }> {
     const estimatedTokens = this.estimateTokens(prompt);
     logger.debug('SDK', `Querying OpenCode (${model || 'default'})`, {
@@ -329,18 +350,23 @@ export class OpenCodeProvider {
 
     const result = await withRetry<{ content: string; tokensUsed?: number }>(async (attemptSignal) => {
       return new Promise<{ content: string; tokensUsed?: number }>((resolve, reject) => {
-        const args: string[] = ['run', prompt, '--format', 'json'];
+        const args: string[] = ['run', '--format', 'json'];
         if (model) {
           args.push('-m', model);
         }
 
-        // Add --dangerously-skip-permissions to avoid interactive prompts
-        args.push('--dangerously-skip-permissions');
+        if (skipPermissions) {
+          args.push('--dangerously-skip-permissions');
+        }
 
         const child = spawn('opencode', args, {
           stdio: ['pipe', 'pipe', 'pipe'],
           env: { ...process.env },
         });
+
+        // Send prompt via stdin to avoid ARG_MAX issues
+        child.stdin.write(prompt);
+        child.stdin.end();
 
         let stdout = '';
         let stderr = '';
@@ -356,11 +382,13 @@ export class OpenCodeProvider {
         // Handle abort signal
         const onAbort = () => {
           child.kill('SIGTERM');
-          reject(new Error('OpenCode query aborted'));
+          const abortErr = new Error('OpenCode query aborted');
+          (abortErr as any).name = 'AbortError';
+          reject(abortErr);
         };
         attemptSignal.addEventListener('abort', onAbort);
 
-        child.on('close', (code) => {
+        child.on('close', (code, signal) => {
           attemptSignal.removeEventListener('abort', onAbort);
 
           if (code !== 0 && code !== null) {
@@ -370,6 +398,15 @@ export class OpenCodeProvider {
               cause: new Error(`OpenCode process exited with code ${code}: ${stderr.substring(0, 500)}`),
             });
             reject(classified);
+            return;
+          }
+
+          if (signal) {
+            reject(classifyOpenCodeError({
+              exitCode: code,
+              stderr,
+              cause: new Error(`OpenCode process killed by signal ${signal}`),
+            }));
             return;
           }
 
@@ -423,6 +460,7 @@ export class OpenCodeProvider {
     let content = '';
     let inputTokens = 0;
     let outputTokens = 0;
+    let hasStepFinishTokens = false;
 
     for (const line of lines) {
       try {
@@ -431,8 +469,8 @@ export class OpenCodeProvider {
         // OpenCode native JSON format: { type: "text", part: { text: "..." } }
         if (event.type === 'text' && event.part?.text) {
           content += event.part.text;
-          // Extract tokens from text event part
-          if (event.part.tokens) {
+          // Extract tokens from text event part (only if no step_finish seen yet)
+          if (event.part.tokens && !hasStepFinishTokens) {
             inputTokens += event.part.tokens.input || event.part.tokens.prompt_tokens || 0;
             outputTokens += event.part.tokens.output || event.part.tokens.completion_tokens || 0;
           }
@@ -440,16 +478,16 @@ export class OpenCodeProvider {
 
         // OpenCode step_finish: { type: "step_finish", part: { tokens: { total, input, output, ... } } }
         if (event.type === 'step_finish' && event.part?.tokens) {
-          inputTokens += event.part.tokens.input || event.part.tokens.prompt_tokens || 0;
-          outputTokens += event.part.tokens.output || event.part.tokens.completion_tokens || 0;
+          hasStepFinishTokens = true;
+          inputTokens = event.part.tokens.input || event.part.tokens.prompt_tokens || 0;
+          outputTokens = event.part.tokens.output || event.part.tokens.completion_tokens || 0;
         }
 
         // OpenCode error event
         if (event.type === 'error' && event.error) {
-          logger.warn('SDK', 'OpenCode error event', {
-            errorName: event.error.name,
-            errorMessage: event.error.data?.message,
-          });
+          const errorName = event.error.name || 'UnknownError';
+          const errorMessage = event.error.data?.message || event.error.message || 'Unknown error';
+          throw new Error(`OpenCode error event: ${errorName} - ${errorMessage}`);
         }
 
         // Fallback: Claude-style assistant messages
@@ -483,12 +521,12 @@ export class OpenCodeProvider {
           }
         }
 
-        // Fallback: generic token usage
-        if (event.usage) {
+        // Fallback: generic token usage (only if no step_finish seen yet)
+        if (event.usage && !hasStepFinishTokens) {
           inputTokens += event.usage.input_tokens || event.usage.prompt_tokens || 0;
           outputTokens += event.usage.output_tokens || event.usage.completion_tokens || 0;
         }
-        if (event.message?.usage) {
+        if (event.message?.usage && !hasStepFinishTokens) {
           inputTokens += event.message.usage.input_tokens || event.message.usage.prompt_tokens || 0;
           outputTokens += event.message.usage.output_tokens || event.message.usage.completion_tokens || 0;
         }
@@ -514,22 +552,33 @@ export class OpenCodeProvider {
     return { content: content.trim(), tokensUsed };
   }
 
-  private getOpenCodeConfig(): { model: string } {
+  private getOpenCodeConfig(): { model: string; maxContextMessages: number; maxTokens: number; skipPermissions: boolean } {
     const settingsPath = USER_SETTINGS_PATH;
     const settings = SettingsDefaultsManager.loadFromFile(settingsPath);
 
     // Empty string means use opencode's default model
     const model = settings.CLAUDE_MEM_OPENCODE_MODEL || '';
+    const maxContextMessages = parseInt(settings.CLAUDE_MEM_OPENCODE_MAX_CONTEXT_MESSAGES, 10) || DEFAULT_MAX_CONTEXT_MESSAGES;
+    const maxTokens = parseInt(settings.CLAUDE_MEM_OPENCODE_MAX_TOKENS, 10) || DEFAULT_MAX_ESTIMATED_TOKENS;
+    const skipPermissions = settings.CLAUDE_MEM_OPENCODE_SKIP_PERMISSIONS === 'true' || settings.CLAUDE_MEM_OPENCODE_SKIP_PERMISSIONS === true;
 
-    return { model };
+    return { model, maxContextMessages, maxTokens, skipPermissions };
   }
 }
 
+let _openCodeAvailableCache: boolean | null = null;
+
 export function isOpenCodeAvailable(): boolean {
+  if (_openCodeAvailableCache !== null) {
+    return _openCodeAvailableCache;
+  }
   try {
-    execSync('which opencode', { stdio: 'pipe' });
+    const cmd = process.platform === 'win32' ? 'where opencode' : 'which opencode';
+    execSync(cmd, { stdio: 'pipe' });
+    _openCodeAvailableCache = true;
     return true;
   } catch {
+    _openCodeAvailableCache = false;
     return false;
   }
 }
