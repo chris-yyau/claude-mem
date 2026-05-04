@@ -345,8 +345,18 @@ export class OpenCodeProvider {
     const estimatedTokens = this.estimateTokens(prompt);
     logger.debug('SDK', `Querying OpenCode (${model || 'default'})`, {
       promptLength: prompt.length,
-      estimatedTokens
+      estimatedTokens,
+      maxTokens,
     });
+
+    // Warn if prompt exceeds configured token limit — the opencode CLI
+    // will handle its own context but this helps identify runaway prompts.
+    if (estimatedTokens > maxTokens) {
+      logger.warn('SDK', `Prompt tokens (${estimatedTokens}) exceed CLAUDE_MEM_OPENCODE_MAX_TOKENS (${maxTokens})`, {
+        promptLength: prompt.length,
+        maxContextMessages,
+      });
+    }
 
     const result = await withRetry<{ content: string; tokensUsed?: number }>(async (attemptSignal) => {
       return new Promise<{ content: string; tokensUsed?: number }>((resolve, reject) => {
@@ -530,7 +540,11 @@ export class OpenCodeProvider {
           inputTokens += event.message.usage.input_tokens || event.message.usage.prompt_tokens || 0;
           outputTokens += event.message.usage.output_tokens || event.message.usage.completion_tokens || 0;
         }
-      } catch {
+      } catch (parseErr) {
+        // Re-throw intentional errors (e.g. from error event handling above)
+        if (!(parseErr instanceof SyntaxError)) {
+          throw parseErr;
+        }
         // Not a JSON line, might be plain text output
         // Try to use it as content if we haven't found any JSON content
         if (!content && line.trim()) {
