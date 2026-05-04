@@ -63,8 +63,8 @@ function readFlag(argv: string[], name: string): string | undefined {
 
 function parseInstallOptions(argv: string[]): InstallOptions {
   const provider = readFlag(argv, '--provider');
-  if (provider !== undefined && provider !== 'claude' && provider !== 'gemini' && provider !== 'openrouter') {
-    console.error(`Unknown --provider: ${provider}. Allowed: claude, gemini, openrouter`);
+  if (provider !== undefined && provider !== 'claude' && provider !== 'gemini' && provider !== 'openrouter' && provider !== 'opencode') {
+    console.error(`Unknown --provider: ${provider}. Allowed: claude, gemini, openrouter, opencode`);
     process.exit(1);
   }
   return {
