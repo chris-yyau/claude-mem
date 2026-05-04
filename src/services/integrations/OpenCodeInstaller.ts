@@ -410,9 +410,20 @@ export async function installOpenCodeIntegration(): Promise<number> {
 
   const mcpResult = registerOpenCodeMcp();
   if (mcpResult !== 0) {
+    // Build the manual-recovery snippet via JSON.stringify so paths with
+    // backslashes (Windows) get JSON-escaped properly. Naive interpolation
+    // would print invalid JSON exactly when users need to copy it.
+    const recoveryConfigPath = path.join(getOpenCodeConfigDirectory(), 'opencode.jsonc');
+    const recoverySnippet = JSON.stringify({
+      'claude-mem': {
+        type: 'local',
+        command: [process.execPath, findMcpServerPath() || 'PATH_TO_mcp-server.cjs'],
+        enabled: true,
+      },
+    });
     console.warn('  MCP server registration failed — search/timeline tools will not be available in OpenCode.');
-    console.warn('  You can register it manually by adding this to ~/.config/opencode/opencode.jsonc under "mcp":');
-    console.warn(`  "claude-mem": { "type": "local", "command": ["${process.execPath}", "${findMcpServerPath() || 'PATH_TO_mcp-server.cjs'}"], "enabled": true }`);
+    console.warn(`  You can register it manually by adding this to ${recoveryConfigPath} under "mcp":`);
+    console.warn(`  ${recoverySnippet}`);
   }
 
   const placeholderContext = `# Memory Context from Past Sessions
