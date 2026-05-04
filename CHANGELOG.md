@@ -10,6 +10,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - **OpenCode MCP server auto-registration** — `npx claude-mem install --ide opencode` now registers `claude-mem` as a local MCP server in `~/.config/opencode/opencode.jsonc` (or `.json`). On a fresh install where neither config exists yet, `opencode.json` is created automatically. `uninstall` removes the entry. Brings OpenCode to parity with Cursor / Windsurf / Claude Code, which already auto-register. Registration uses `process.execPath` (not literal `'node'`) so it works under nvm / npx-installed Node.
 - Status check (`checkOpenCodeStatus`) reports MCP registration state.
 - **Per-project AGENTS.md memory injection for OpenCode** — the OpenCode plugin now writes a `<claude-mem-context>` block into `<projectDir>/AGENTS.md` on `session.created`, so OpenCode sessions see memories from past sessions in the same project (mirrors Claude Code's per-project `CLAUDE.md` pattern). Aligns the OpenCode-side write with the worker-side codex AGENTS.md write, which already targets the per-project path.
+- **OpenCode CLI as a 4th LLM provider for memory compression.** When `CLAUDE_MEM_PROVIDER=opencode`, claude-mem shells out to the local `opencode run --format json` binary instead of calling external APIs directly. No separate API key required — OpenCode handles auth via whatever provider it's already configured for.
+- New `OpenCodeProvider` class (`src/services/worker/OpenCodeProvider.ts`) that spawns opencode via `execFile`-style spawn (no shell), sends the prompt via stdin (avoids ARG_MAX), parses the JSONL event stream (`text` / `step_finish` / `error`), and classifies subprocess failures into `auth_invalid` / `rate_limit` / `quota_exhausted` / `unrecoverable` / `transient`.
+- `--provider opencode` accepted by `npx claude-mem install` (interactive and non-interactive). Help text updated to list it.
+- **Interactive model picker for OpenCode** during install — runs `opencode models`, sorts cheap-for-compression candidates (haiku/flash/lite/nano/mini/free) to the top with a star marker, falls back to free-text input if `opencode` isn't on PATH.
+- New env vars: `CLAUDE_MEM_OPENCODE_MODEL`, `CLAUDE_MEM_OPENCODE_MAX_TOKENS`, `CLAUDE_MEM_OPENCODE_SKIP_PERMISSIONS`.
 
 ### Changed
 - `OpenCodeInstaller` now reuses `findMcpServerPath` imported from `CursorHooksInstaller` rather than duplicating its lookup logic.
@@ -21,11 +26,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   - Rejects inverted tag pairs (close-before-open) by falling through to the append branch instead of producing a content-losing reordered splice.
 - The OpenCode plugin (`src/integrations/opencode-plugin/index.ts`) now imports the shared `injectContextIntoMarkdownFile` helper instead of reimplementing tag-replacement logic — single source of truth for AGENTS.md write semantics across plugin and installer.
 - Plugin's "worker unavailable" path now silences `ECONNREFUSED` (matches the existing `workerPostFireAndForget` / `workerGetText` convention) so a worker-down state doesn't spam every session.created.
+- Worker `getActiveAgent()` and fallback chain in `runFallbackForTerminatedSession` prefer OpenCode when `CLAUDE_MEM_PROVIDER=opencode` AND the binary is on PATH; falls back to other providers if unavailable. `getAiStatus()` reports `provider: "opencode"`.
 
 ### Notes
 - **`.jsonc` comment loss:** the installer round-trips opencode config through `JSON.stringify`, which strips comments. A console + structured warning fires before each destructive write so users with hand-edited `opencode.jsonc` are notified. A comment-preserving writer (e.g., `jsonc-parser`'s `modify` + `applyEdits` API) is tracked as follow-up.
 - **`process.execPath` staleness:** the resolved Node binary path is baked into `opencode.jsonc` at install time. Under nvm, upgrading Node means re-running `npx claude-mem install --ide opencode` to refresh the path.
 - **VCS impact:** any project where you run OpenCode will get an `AGENTS.md` created or modified on session start. If you commit `AGENTS.md` to a shared repo, expect git diffs. Consider adding `AGENTS.md` to `.gitignore` for projects where you don't want memory context tracked.
+- `--dangerously-skip-permissions` is opt-in via `CLAUDE_MEM_OPENCODE_SKIP_PERMISSIONS=true` (default off). It only gates OpenCode's permission prompts for the (claude-mem-constructed) summarization prompt — not user-controlled content.
+- ENOENT (binary not found) is classified as `unrecoverable` so the worker doesn't retry-loop when opencode isn't installed.
 
 ## [12.6.0] - 2026-05-04
 
