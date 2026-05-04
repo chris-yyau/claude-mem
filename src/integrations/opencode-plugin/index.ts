@@ -1,7 +1,7 @@
 import { z } from "zod";
-import { existsSync, readFileSync, writeFileSync } from "fs";
 import { join } from "path";
 import { homedir } from "os";
+import { injectContextIntoMarkdownFile } from "../../utils/context-injection.js";
 
 interface OpenCodeProject {
   name?: string;
@@ -126,15 +126,14 @@ const contentSessionIdsByOpenCodeSessionId = new Map<string, string>();
 
 const MAX_SESSION_MAP_ENTRIES = 1000;
 
-const CONTEXT_TAG_OPEN = "<claude-mem-context>";
-const CONTEXT_TAG_CLOSE = "</claude-mem-context>";
-
 function getAgentsMdPath(projectDir?: string): string {
-  // Per-project AGENTS.md (mirrors Claude Code's per-project CLAUDE.md)
+  // Per-project AGENTS.md (mirrors Claude Code's per-project CLAUDE.md).
+  // Worker-side codex injection writes to the same per-project path, so the
+  // two writers stay aligned on file location.
   if (projectDir) {
     return join(projectDir, "AGENTS.md");
   }
-  // Global fallback
+  // Global fallback for runtimes where ctx.directory is unset.
   if (process.env.OPENCODE_CONFIG_DIR) {
     return join(process.env.OPENCODE_CONFIG_DIR, "AGENTS.md");
   }
@@ -142,10 +141,9 @@ function getAgentsMdPath(projectDir?: string): string {
 }
 
 /**
- * Fetch memory context for the current project and inject it into
- * a per-project AGENTS.md file (written to the project directory).
- *
- * This mirrors how Claude Code uses per-project CLAUDE.md files.
+ * Fetch memory context for the current project and inject it into the
+ * per-project AGENTS.md via the shared injectContextIntoMarkdownFile helper
+ * (single source of truth for tag conventions, atomic write, sanitization).
  */
 async function injectContextIntoAgentsMd(projectName: string, projectDir?: string): Promise<void> {
   try {
@@ -155,44 +153,19 @@ async function injectContextIntoAgentsMd(projectName: string, projectDir?: strin
     if (!contextText || !contextText.trim()) return;
 
     const agentsMdPath = getAgentsMdPath(projectDir);
-    let existing = "";
-    if (existsSync(agentsMdPath)) {
-      existing = readFileSync(agentsMdPath, "utf-8");
-    }
-
-    const tagStart = existing.indexOf(CONTEXT_TAG_OPEN);
-    const tagEnd = existing.indexOf(CONTEXT_TAG_CLOSE);
-
-    let newContent: string;
-    const contextBlock = `${CONTEXT_TAG_OPEN}\n${contextText.trim()}\n${CONTEXT_TAG_CLOSE}`;
-
-    if (tagStart !== -1 && tagEnd !== -1) {
-      // Replace existing context block with current project's context
-      newContent =
-        existing.slice(0, tagStart) +
-        contextBlock +
-        existing.slice(tagEnd + CONTEXT_TAG_CLOSE.length);
-    } else {
-      // No context block yet — create one
-      const headerEnd = existing.indexOf("\n\n");
-      if (headerEnd !== -1 && existing.startsWith("# Claude-Mem")) {
-        newContent =
-          existing.slice(0, headerEnd + 2) +
-          contextBlock +
-          "\n" +
-          existing.slice(headerEnd + 2);
-      } else if (existing.trim()) {
-        newContent = contextBlock + "\n" + existing;
-      } else {
-        newContent = `# Claude-Mem Memory Context\n\n${contextBlock}\n\n*Use claude-mem search tools for manual memory queries.*\n`;
-      }
-    }
-
-    writeFileSync(agentsMdPath, newContent, "utf-8");
+    injectContextIntoMarkdownFile(
+      agentsMdPath,
+      contextText.trim(),
+      "# Claude-Mem Memory Context",
+    );
     console.log(`[claude-mem] Context injected into AGENTS.md for project: ${projectName}`);
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : String(error);
-    console.warn(`[claude-mem] Failed to inject context into AGENTS.md: ${message}`);
+    // Match the file-wide ECONNREFUSED-silence convention (workerPostFireAndForget,
+    // workerGetText) so a worker-down state doesn't spam every session.created.
+    if (!message.includes("ECONNREFUSED")) {
+      console.warn(`[claude-mem] Failed to inject context into AGENTS.md: ${message}`);
+    }
   }
 }
 
