@@ -7,15 +7,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ## [Unreleased]
 
 ### Added
-- **OpenCode MCP server auto-registration** — `npx claude-mem install --ide opencode` now registers `claude-mem` as a local MCP server in `~/.config/opencode/opencode.jsonc` (or `.json`). `uninstall` removes it. Brings OpenCode to parity with Cursor / Windsurf / Claude Code, which already auto-register. Registration uses `process.execPath` (not literal `'node'`) so it works under nvm / npx-installed Node.
+- **OpenCode MCP server auto-registration** — `npx claude-mem install --ide opencode` now registers `claude-mem` as a local MCP server in `~/.config/opencode/opencode.jsonc` (or `.json`). On a fresh install where neither config exists yet, `opencode.json` is created automatically. `uninstall` removes the entry. Brings OpenCode to parity with Cursor / Windsurf / Claude Code, which already auto-register. Registration uses `process.execPath` (not literal `'node'`) so it works under nvm / npx-installed Node.
 - Status check (`checkOpenCodeStatus`) reports MCP registration state.
 
 ### Changed
-- `OpenCodeInstaller.findMcpServerPath` now imports the canonical helper from `CursorHooksInstaller` rather than duplicating its lookup logic.
-- Config writes use atomic tmp-then-rename (`atomicWriteJson`) so a crash mid-write cannot corrupt the user's `opencode.jsonc`.
+- `OpenCodeInstaller` now reuses `findMcpServerPath` imported from `CursorHooksInstaller` rather than duplicating its lookup logic.
+- JSONC parsing uses the `jsonc-parser` package (the same parser VS Code uses) — string-aware, handles inline `//` comments, block comments, and trailing commas correctly. Replaces a regex stripper that only handled line-start comments.
+- Config writes use atomic tmp-then-rename (`atomicWriteJson`) so a crash mid-write cannot corrupt the user's `opencode.jsonc`. Tmp file is cleaned up on rename failure.
 
 ### Notes
-- **`.jsonc` comment loss:** the installer round-trips opencode config through `JSON.stringify`, which strips comments and trailing commas. A console + structured warning fires before each destructive write so users with hand-edited `opencode.jsonc` are notified. A real JSONC-preserving writer (e.g., `jsonc-parser`'s edit API) is tracked for follow-up.
+- **`.jsonc` comment loss:** the installer round-trips opencode config through `JSON.stringify`, which strips comments. A console + structured warning fires before each destructive write so users with hand-edited `opencode.jsonc` are notified. A comment-preserving writer (e.g., `jsonc-parser`'s `modify` + `applyEdits` API) is tracked as follow-up.
+- **`process.execPath` staleness:** the resolved Node binary path is baked into `opencode.jsonc` at install time. Under nvm, upgrading Node means re-running `npx claude-mem install --ide opencode` to refresh the path.
 
 ## [12.6.0] - 2026-05-04
 

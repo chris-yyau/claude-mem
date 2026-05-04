@@ -3,6 +3,7 @@ import path from 'path';
 import { homedir } from 'os';
 import { fileURLToPath } from 'url';
 import { existsSync, readFileSync, writeFileSync, renameSync, mkdirSync, copyFileSync, unlinkSync } from 'fs';
+import { parse as parseJsoncString, ParseError } from 'jsonc-parser';
 import { logger } from '../../utils/logger.js';
 import { CONTEXT_TAG_OPEN, CONTEXT_TAG_CLOSE, injectContextIntoMarkdownFile } from '../../utils/context-injection.js';
 import { getWorkerPort } from '../../shared/worker-utils.js';
@@ -51,23 +52,43 @@ interface OpenCodeConfig {
   [key: string]: unknown;
 }
 
+// String-aware JSONC parsing via jsonc-parser (the same parser VS Code uses).
+// Replaces a previous regex stripper that only handled line-start comments
+// and could mangle commas inside string values.
 function parseJsoncFile(filePath: string): OpenCodeConfig {
   const raw = readFileSync(filePath, 'utf-8');
-  const stripped = raw
-    .replace(/^\s*\/\/.*$/gm, '')      // line comments (// at line start)
-    .replace(/\/\*[\s\S]*?\*\//g, '')   // block comments
-    .replace(/,\s*}/g, '}')             // trailing comma before }
-    .replace(/,\s*\]/g, ']');           // trailing comma before ]
-  return JSON.parse(stripped) as OpenCodeConfig;
+  const errors: ParseError[] = [];
+  const parsed = parseJsoncString(raw, errors, {
+    allowTrailingComma: true,
+    disallowComments: false,
+  });
+  if (errors.length > 0) {
+    const summary = errors
+      .slice(0, 3)
+      .map(e => `code=${e.error} at offset ${e.offset}`)
+      .join(', ');
+    throw new Error(`Failed to parse JSONC: ${summary}`);
+  }
+  return (parsed ?? {}) as OpenCodeConfig;
 }
 
 // Atomic write: writes to a sibling tmp file then renames, so a crash mid-write
 // can never leave the user's opencode config truncated. rename(2) is atomic
-// on POSIX filesystems within a single mount point.
+// on POSIX filesystems within a single mount point. Cleans up the tmp file
+// on rename failure so we don't leave orphaned `*.tmp.<pid>` siblings.
 function atomicWriteJson(targetPath: string, content: string): void {
   const tmpPath = `${targetPath}.tmp.${process.pid}`;
   writeFileSync(tmpPath, content, 'utf-8');
-  renameSync(tmpPath, targetPath);
+  try {
+    renameSync(tmpPath, targetPath);
+  } catch (renameError) {
+    try {
+      unlinkSync(tmpPath);
+    } catch {
+      // Best-effort cleanup; surface the original rename error below.
+    }
+    throw renameError;
+  }
 }
 
 export function installOpenCodePlugin(): number {
@@ -124,14 +145,25 @@ export function registerOpenCodeMcp(): number {
   const configPath = path.join(configDir, 'opencode.jsonc');
   const configJsonPath = path.join(configDir, 'opencode.json');
 
-  // Try opencode.jsonc first, then opencode.json
+  // Prefer existing opencode.jsonc, then opencode.json. If neither exists
+  // (fresh OpenCode install or user hasn't launched it yet), create a new
+  // opencode.json so MCP registration succeeds rather than bailing — that
+  // matches the "auto-registration" advertised in the install flow.
   let actualConfigPath: string | null = null;
   if (existsSync(configPath)) actualConfigPath = configPath;
   else if (existsSync(configJsonPath)) actualConfigPath = configJsonPath;
 
   if (!actualConfigPath) {
-    console.error(`Could not find opencode config file. Expected at: ${configPath} or ${configJsonPath}`);
-    return 1;
+    try {
+      mkdirSync(configDir, { recursive: true });
+      actualConfigPath = configJsonPath;
+      atomicWriteJson(actualConfigPath, '{}\n');
+      console.log(`  Created opencode config at ${actualConfigPath}`);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error(`Failed to create opencode config at ${configJsonPath}: ${message}`);
+      return 1;
+    }
   }
 
   try {
