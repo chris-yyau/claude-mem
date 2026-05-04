@@ -16,7 +16,6 @@ import {
 import { ClassifiedProviderError } from './provider-errors.js';
 import { withRetry } from './retry.js';
 
-const DEFAULT_MAX_CONTEXT_MESSAGES = 20;
 const DEFAULT_MAX_ESTIMATED_TOKENS = 100000;
 const CHARS_PER_TOKEN_ESTIMATE = 4;
 
@@ -113,7 +112,7 @@ export class OpenCodeProvider {
   }
 
   async startSession(session: ActiveSession, worker?: WorkerRef): Promise<void> {
-    const { model, maxContextMessages, maxTokens, skipPermissions } = this.getOpenCodeConfig();
+    const { model, maxTokens, skipPermissions } = this.getOpenCodeConfig();
 
     if (!session.memorySessionId) {
       const syntheticMemorySessionId = `opencode-${session.contentSessionId}-${Date.now()}`;
@@ -131,7 +130,7 @@ export class OpenCodeProvider {
     session.conversationHistory.push({ role: 'user', content: initPrompt });
 
     try {
-      const initResponse = await this.queryOpenCode(initPrompt, model, skipPermissions, maxContextMessages, maxTokens);
+      const initResponse = await this.queryOpenCode(initPrompt, model, skipPermissions, maxTokens);
       await this.handleInitResponse(initResponse, session, worker, model);
     } catch (error: unknown) {
       if (error instanceof Error) {
@@ -147,7 +146,7 @@ export class OpenCodeProvider {
 
     try {
       for await (const message of this.sessionManager.getMessageIterator(session.sessionDbId)) {
-        lastCwd = await this.processOneMessage(session, message, lastCwd, model, worker, mode, skipPermissions, maxContextMessages, maxTokens);
+        lastCwd = await this.processOneMessage(session, message, lastCwd, model, worker, mode, skipPermissions, maxTokens);
       }
     } catch (error: unknown) {
       if (error instanceof Error) {
@@ -204,7 +203,6 @@ export class OpenCodeProvider {
     worker: WorkerRef | undefined,
     mode: ModeConfig,
     skipPermissions: boolean,
-    maxContextMessages: number,
     maxTokens: number
   ): Promise<string | undefined> {
     this.prepareMessageMetadata(session, message);
@@ -216,11 +214,11 @@ export class OpenCodeProvider {
 
     if (message.type === 'observation') {
       await this.processObservationMessage(
-        session, message, originalTimestamp, lastCwd, model, worker, mode, skipPermissions, maxContextMessages, maxTokens
+        session, message, originalTimestamp, lastCwd, model, worker, mode, skipPermissions, maxTokens
       );
     } else if (message.type === 'summarize') {
       await this.processSummaryMessage(
-        session, message, originalTimestamp, lastCwd, model, worker, mode, skipPermissions, maxContextMessages, maxTokens
+        session, message, originalTimestamp, lastCwd, model, worker, mode, skipPermissions, maxTokens
       );
     }
 
@@ -236,7 +234,6 @@ export class OpenCodeProvider {
     worker: WorkerRef | undefined,
     _mode: ModeConfig,
     skipPermissions: boolean,
-    maxContextMessages: number,
     maxTokens: number
   ): Promise<void> {
     if (message.prompt_number !== undefined) {
@@ -257,7 +254,7 @@ export class OpenCodeProvider {
     });
 
     session.conversationHistory.push({ role: 'user', content: obsPrompt });
-    const obsResponse = await this.queryOpenCode(obsPrompt, model, skipPermissions, maxContextMessages, maxTokens);
+    const obsResponse = await this.queryOpenCode(obsPrompt, model, skipPermissions, maxTokens);
 
     let tokensUsed = 0;
     if (obsResponse.content) {
@@ -282,7 +279,6 @@ export class OpenCodeProvider {
     worker: WorkerRef | undefined,
     mode: ModeConfig,
     skipPermissions: boolean,
-    maxContextMessages: number,
     maxTokens: number
   ): Promise<void> {
     if (!session.memorySessionId) {
@@ -298,7 +294,7 @@ export class OpenCodeProvider {
     }, mode);
 
     session.conversationHistory.push({ role: 'user', content: summaryPrompt });
-    const summaryResponse = await this.queryOpenCode(summaryPrompt, model, skipPermissions, maxContextMessages, maxTokens);
+    const summaryResponse = await this.queryOpenCode(summaryPrompt, model, skipPermissions, maxTokens);
 
     let tokensUsed = 0;
     if (summaryResponse.content) {
@@ -339,7 +335,6 @@ export class OpenCodeProvider {
     prompt: string,
     model: string,
     skipPermissions: boolean,
-    maxContextMessages: number,
     maxTokens: number
   ): Promise<{ content: string; tokensUsed?: number }> {
     const estimatedTokens = this.estimateTokens(prompt);
@@ -354,7 +349,6 @@ export class OpenCodeProvider {
     if (estimatedTokens > maxTokens) {
       logger.warn('SDK', `Prompt tokens (${estimatedTokens}) exceed CLAUDE_MEM_OPENCODE_MAX_TOKENS (${maxTokens})`, {
         promptLength: prompt.length,
-        maxContextMessages,
       });
     }
 
@@ -375,7 +369,22 @@ export class OpenCodeProvider {
         });
 
         // Send prompt via stdin to avoid ARG_MAX issues
-        child.stdin.write(prompt);
+        child.stdin.on('error', (err) => {
+          // EPIPE or similar — child process may have exited before
+          // consuming stdin (auth failure, bad args, etc.). Stdin errors
+          // are expected in error paths; the close handler will reject.
+          logger.debug('SDK', 'OpenCode stdin error (handled)', {
+            error: err.message,
+            code: (err as any).code,
+          });
+        });
+        child.stdin.write(prompt, (writeErr) => {
+          if (writeErr && (writeErr as any).code === 'EPIPE') {
+            logger.debug('SDK', 'OpenCode stdin write EPIPE (handled)', {
+              sessionId: undefined,
+            });
+          }
+        });
         child.stdin.end();
 
         let stdout = '';
@@ -566,17 +575,16 @@ export class OpenCodeProvider {
     return { content: content.trim(), tokensUsed };
   }
 
-  private getOpenCodeConfig(): { model: string; maxContextMessages: number; maxTokens: number; skipPermissions: boolean } {
+  private getOpenCodeConfig(): { model: string; maxTokens: number; skipPermissions: boolean } {
     const settingsPath = USER_SETTINGS_PATH;
     const settings = SettingsDefaultsManager.loadFromFile(settingsPath);
 
     // Empty string means use opencode's default model
     const model = settings.CLAUDE_MEM_OPENCODE_MODEL || '';
-    const maxContextMessages = parseInt(settings.CLAUDE_MEM_OPENCODE_MAX_CONTEXT_MESSAGES, 10) || DEFAULT_MAX_CONTEXT_MESSAGES;
     const maxTokens = parseInt(settings.CLAUDE_MEM_OPENCODE_MAX_TOKENS, 10) || DEFAULT_MAX_ESTIMATED_TOKENS;
     const skipPermissions = settings.CLAUDE_MEM_OPENCODE_SKIP_PERMISSIONS === 'true' || settings.CLAUDE_MEM_OPENCODE_SKIP_PERMISSIONS === true;
 
-    return { model, maxContextMessages, maxTokens, skipPermissions };
+    return { model, maxTokens, skipPermissions };
   }
 }
 
