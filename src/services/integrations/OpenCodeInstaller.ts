@@ -57,6 +57,16 @@ export function findMcpServerPath(): string | null {
   return null;
 }
 
+function parseJsoncFile(filePath: string): unknown {
+  const raw = readFileSync(filePath, 'utf-8');
+  const stripped = raw
+    .replace(/^\s*\/\/.*$/gm, '')      // line comments (// at line start)
+    .replace(/\/\*[\s\S]*?\*\//g, '')   // block comments
+    .replace(/,\s*}/g, '}')             // trailing comma before }
+    .replace(/,\s*\]/g, ']');           // trailing comma before ]
+  return JSON.parse(stripped);
+}
+
 export function installOpenCodePlugin(): number {
   const builtPluginPath = findBuiltPluginPath();
   if (!builtPluginPath) {
@@ -122,15 +132,7 @@ export function registerOpenCodeMcp(): number {
   }
 
   try {
-    // Remove JS/TS style comments before parsing.
-    // Only strip // at start of lines (ignoring whitespace) to avoid matching https:// URLs.
-    const raw = readFileSync(actualConfigPath, 'utf-8');
-    const stripped = raw
-      .replace(/^\s*\/\/.*$/gm, '')      // line comments (// at line start)
-      .replace(/\/\*[\s\S]*?\*\//g, '')   // block comments
-      .replace(/,\s*}/g, '}')             // trailing comma before }
-      .replace(/,\s*\]/g, ']');           // trailing comma before ]
-    const config = JSON.parse(stripped);
+    const config = parseJsoncFile(actualConfigPath) as Record<string, unknown>;
 
     if (!config.mcp) {
       config.mcp = {};
@@ -148,6 +150,10 @@ export function registerOpenCodeMcp(): number {
       enabled: true,
     };
 
+    // Warn if the config was .jsonc — JSON.stringify strips comments
+    if (actualConfigPath.endsWith('.jsonc')) {
+      logger.warn('OPENCODE', 'Writing opencode config as strict JSON — comments in the original .jsonc file will be lost', { configPath: actualConfigPath });
+    }
     // Write back preserving .jsonc extension if that's what we found
     writeFileSync(actualConfigPath, JSON.stringify(config, null, 2) + '\n');
     console.log(`  Registered claude-mem MCP server in ${path.basename(actualConfigPath)}`);
@@ -172,14 +178,16 @@ export function unregisterOpenCodeMcp(): number {
   if (!actualConfigPath) return 0; // No config, nothing to unregister
 
   try {
-    const raw = readFileSync(actualConfigPath, 'utf-8');
-    const stripped = raw.replace(/^\s*\/\/.*$/gm, '').replace(/\/\*[\s\S]*?\*\//g, '').replace(/,\s*}/g, '}').replace(/,\s*\]/g, ']');
-    const config = JSON.parse(stripped);
+    const config = parseJsoncFile(actualConfigPath) as Record<string, unknown>;
 
     if (config.mcp?.['claude-mem']) {
       delete config.mcp['claude-mem'];
       if (Object.keys(config.mcp).length === 0) {
         delete config.mcp;
+      }
+      // Warn if the config was .jsonc — JSON.stringify strips comments
+      if (actualConfigPath.endsWith('.jsonc')) {
+        logger.warn('OPENCODE', 'Writing opencode config as strict JSON — comments in the original .jsonc file will be lost', { configPath: actualConfigPath });
       }
       writeFileSync(actualConfigPath, JSON.stringify(config, null, 2) + '\n');
       console.log(`  Removed claude-mem MCP server from ${path.basename(actualConfigPath)}`);
@@ -339,9 +347,7 @@ export function checkOpenCodeStatus(): number {
   let actualConfigPath = existsSync(configPath) ? configPath : existsSync(configJsonPath) ? configJsonPath : null;
   if (actualConfigPath) {
     try {
-      const raw = readFileSync(actualConfigPath, 'utf-8');
-      const stripped = raw.replace(/^\s*\/\/.*$/gm, '').replace(/\/\*[\s\S]*?\*\//g, '').replace(/,\s*}/g, '}').replace(/,\s*\]/g, ']');
-      const config = JSON.parse(stripped);
+      const config = parseJsoncFile(actualConfigPath);
       console.log(`  MCP registered: ${config.mcp?.['claude-mem'] ? 'yes' : 'no'}`);
     } catch {
       console.log(`  MCP registered: could not parse config`);
