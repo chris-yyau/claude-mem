@@ -173,7 +173,7 @@ export function unregisterOpenCodeMcp(): number {
 
   try {
     const raw = readFileSync(actualConfigPath, 'utf-8');
-    const stripped = raw.replace(/^\s*\/\/.*$/gm, '').replace(/\/\*[\s\S]*?\*\//g, '');
+    const stripped = raw.replace(/^\s*\/\/.*$/gm, '').replace(/\/\*[\s\S]*?\*\//g, '').replace(/,\s*}/g, '}').replace(/,\s*\]/g, ']');
     const config = JSON.parse(stripped);
 
     if (config.mcp?.['claude-mem']) {
@@ -340,7 +340,7 @@ export function checkOpenCodeStatus(): number {
   if (actualConfigPath) {
     try {
       const raw = readFileSync(actualConfigPath, 'utf-8');
-      const stripped = raw.replace(/^\s*\/\/.*$/gm, '').replace(/\/\*[\s\S]*?\*\//g, '');
+      const stripped = raw.replace(/^\s*\/\/.*$/gm, '').replace(/\/\*[\s\S]*?\*\//g, '').replace(/,\s*}/g, '}').replace(/,\s*\]/g, ']');
       const config = JSON.parse(stripped);
       console.log(`  MCP registered: ${config.mcp?.['claude-mem'] ? 'yes' : 'no'}`);
     } catch {
