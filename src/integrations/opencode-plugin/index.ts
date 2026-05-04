@@ -1,4 +1,7 @@
 import { z } from "zod";
+import { existsSync, readFileSync, writeFileSync } from "fs";
+import { join } from "path";
+import { homedir } from "os";
 
 interface OpenCodeProject {
   name?: string;
@@ -123,6 +126,70 @@ const contentSessionIdsByOpenCodeSessionId = new Map<string, string>();
 
 const MAX_SESSION_MAP_ENTRIES = 1000;
 
+const CONTEXT_TAG_OPEN = "<claude-mem-context>";
+const CONTEXT_TAG_CLOSE = "</claude-mem-context>";
+
+function getAgentsMdPath(): string {
+  if (process.env.OPENCODE_CONFIG_DIR) {
+    return join(process.env.OPENCODE_CONFIG_DIR, "AGENTS.md");
+  }
+  return join(homedir(), ".config", "opencode", "AGENTS.md");
+}
+
+/**
+ * Fetch memory context from the worker and inject it into AGENTS.md.
+ * This gives OpenCode the same project-level memory context that Claude Code
+ * gets via CLAUDE.md.
+ */
+async function injectContextIntoAgentsMd(projectName: string): Promise<void> {
+  try {
+    const contextText = await workerGetText(
+      `/api/context/inject?project=${encodeURIComponent(projectName)}`,
+    );
+    if (!contextText || !contextText.trim()) return;
+
+    const agentsMdPath = getAgentsMdPath();
+    let existing = "";
+    if (existsSync(agentsMdPath)) {
+      existing = readFileSync(agentsMdPath, "utf-8");
+    }
+
+    const tagStart = existing.indexOf(CONTEXT_TAG_OPEN);
+    const tagEnd = existing.indexOf(CONTEXT_TAG_CLOSE);
+
+    let newContent: string;
+    const contextBlock = `${CONTEXT_TAG_OPEN}\n${contextText.trim()}\n${CONTEXT_TAG_CLOSE}`;
+
+    if (tagStart !== -1 && tagEnd !== -1) {
+      // Replace existing context block
+      newContent =
+        existing.slice(0, tagStart) +
+        contextBlock +
+        existing.slice(tagEnd + CONTEXT_TAG_CLOSE.length);
+    } else {
+      // Append after the header or at the top
+      const headerEnd = existing.indexOf("\n\n");
+      if (headerEnd !== -1 && existing.startsWith("# Claude-Mem")) {
+        newContent =
+          existing.slice(0, headerEnd + 2) +
+          contextBlock +
+          "\n" +
+          existing.slice(headerEnd + 2);
+      } else if (existing.trim()) {
+        newContent = contextBlock + "\n" + existing;
+      } else {
+        newContent = `# Claude-Mem Memory Context\n\n${contextBlock}\n\n*Use claude-mem search tools for manual memory queries.*\n`;
+      }
+    }
+
+    writeFileSync(agentsMdPath, newContent, "utf-8");
+    console.log(`[claude-mem] Context injected into AGENTS.md for project: ${projectName}`);
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.warn(`[claude-mem] Failed to inject context into AGENTS.md: ${message}`);
+  }
+}
+
 function getOrCreateContentSessionId(openCodeSessionId: string): string {
   if (!contentSessionIdsByOpenCodeSessionId.has(openCodeSessionId)) {
     while (contentSessionIdsByOpenCodeSessionId.size >= MAX_SESSION_MAP_ENTRIES) {
@@ -184,6 +251,10 @@ export const ClaudeMemPlugin = async (ctx: OpenCodePluginContext) => {
             project: projectName,
             prompt: "",
           });
+
+          // Inject latest memory context into AGENTS.md so the
+          // new session sees memories from all past sessions.
+          injectContextIntoAgentsMd(projectName);
           break;
         }
 
