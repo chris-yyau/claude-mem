@@ -1,4 +1,7 @@
 import { z } from "zod";
+import { join } from "path";
+import { homedir } from "os";
+import { injectContextIntoMarkdownFile } from "../../utils/context-injection.js";
 
 interface OpenCodeProject {
   name?: string;
@@ -123,6 +126,57 @@ const contentSessionIdsByOpenCodeSessionId = new Map<string, string>();
 
 const MAX_SESSION_MAP_ENTRIES = 1000;
 
+function getAgentsMdPath(projectDir?: string): string {
+  // Per-project AGENTS.md (mirrors Claude Code's per-project CLAUDE.md).
+  // Worker-side codex injection writes to the same per-project path, so the
+  // two writers stay aligned on file location.
+  //
+  // Sources are all host/install controlled — projectDir comes from
+  // OpenCode's ctx.directory (the host process, not user input);
+  // OPENCODE_CONFIG_DIR is an opt-in env override; homedir() is the OS user.
+  // The literal "AGENTS.md" filename component cannot itself escape via
+  // join's normalization. Static analysis (semgrep path-join-traversal) is
+  // suppressed for these three lines.
+  if (projectDir) {
+    // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal
+    return join(projectDir, "AGENTS.md");
+  }
+  if (process.env.OPENCODE_CONFIG_DIR) {
+    // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal
+    return join(process.env.OPENCODE_CONFIG_DIR, "AGENTS.md");
+  }
+  return join(homedir(), ".config", "opencode", "AGENTS.md");
+}
+
+/**
+ * Fetch memory context for the current project and inject it into the
+ * per-project AGENTS.md via the shared injectContextIntoMarkdownFile helper
+ * (single source of truth for tag conventions, atomic write, sanitization).
+ */
+async function injectContextIntoAgentsMd(projectName: string, projectDir?: string): Promise<void> {
+  try {
+    const contextText = await workerGetText(
+      `/api/context/inject?project=${encodeURIComponent(projectName)}`,
+    );
+    if (!contextText || !contextText.trim()) return;
+
+    const agentsMdPath = getAgentsMdPath(projectDir);
+    injectContextIntoMarkdownFile(
+      agentsMdPath,
+      contextText.trim(),
+      "# Claude-Mem Memory Context",
+    );
+    console.log(`[claude-mem] Context injected into AGENTS.md for project: ${projectName}`);
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : String(error);
+    // Match the file-wide ECONNREFUSED-silence convention (workerPostFireAndForget,
+    // workerGetText) so a worker-down state doesn't spam every session.created.
+    if (!message.includes("ECONNREFUSED")) {
+      console.warn(`[claude-mem] Failed to inject context into AGENTS.md: ${message}`);
+    }
+  }
+}
+
 function getOrCreateContentSessionId(openCodeSessionId: string): string {
   if (!contentSessionIdsByOpenCodeSessionId.has(openCodeSessionId)) {
     while (contentSessionIdsByOpenCodeSessionId.size >= MAX_SESSION_MAP_ENTRIES) {
@@ -184,6 +238,15 @@ export const ClaudeMemPlugin = async (ctx: OpenCodePluginContext) => {
             project: projectName,
             prompt: "",
           });
+
+          // Best-effort fire-and-forget: fetch latest memory context and
+          // refresh AGENTS.md. This is async and not awaited — OpenCode
+          // reads AGENTS.md when assembling the session prompt, so the
+          // fresh context lands on disk for the *next* session start
+          // (the current session sees whatever was on disk before this
+          // event fired). `void` makes the floating-promise intent
+          // explicit; the inner try/catch swallows transient failures.
+          void injectContextIntoAgentsMd(projectName, ctx.directory);
           break;
         }
 

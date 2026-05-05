@@ -9,15 +9,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ### Added
 - **OpenCode MCP server auto-registration** — `npx claude-mem install --ide opencode` now registers `claude-mem` as a local MCP server in `~/.config/opencode/opencode.jsonc` (or `.json`). On a fresh install where neither config exists yet, `opencode.json` is created automatically. `uninstall` removes the entry. Brings OpenCode to parity with Cursor / Windsurf / Claude Code, which already auto-register. Registration uses `process.execPath` (not literal `'node'`) so it works under nvm / npx-installed Node.
 - Status check (`checkOpenCodeStatus`) reports MCP registration state.
+- **Per-project AGENTS.md memory injection for OpenCode** — the OpenCode plugin now writes a `<claude-mem-context>` block into `<projectDir>/AGENTS.md` on `session.created`, so OpenCode sessions see memories from past sessions in the same project (mirrors Claude Code's per-project `CLAUDE.md` pattern). Aligns the OpenCode-side write with the worker-side codex AGENTS.md write, which already targets the per-project path.
 
 ### Changed
 - `OpenCodeInstaller` now reuses `findMcpServerPath` imported from `CursorHooksInstaller` rather than duplicating its lookup logic.
 - JSONC parsing uses the `jsonc-parser` package (the same parser VS Code uses) — string-aware, handles inline `//` comments, block comments, and trailing commas correctly. Replaces a regex stripper that only handled line-start comments.
 - Config writes use atomic tmp-then-rename (`atomicWriteJson`) so a crash mid-write cannot corrupt the user's `opencode.jsonc`. Tmp file is cleaned up on rename failure.
+- `injectContextIntoMarkdownFile` (`src/utils/context-injection.ts`) hardened:
+  - Uses atomic tmp-then-rename writes — a crash mid-write can no longer truncate the user's AGENTS.md.
+  - Sanitizes incoming context to strip embedded `<claude-mem-context>` / `</claude-mem-context>` markers before wrapping, preventing tag-pair confusion across re-injections.
+  - Rejects inverted tag pairs (close-before-open) by falling through to the append branch instead of producing a content-losing reordered splice.
+- The OpenCode plugin (`src/integrations/opencode-plugin/index.ts`) now imports the shared `injectContextIntoMarkdownFile` helper instead of reimplementing tag-replacement logic — single source of truth for AGENTS.md write semantics across plugin and installer.
+- Plugin's "worker unavailable" path now silences `ECONNREFUSED` (matches the existing `workerPostFireAndForget` / `workerGetText` convention) so a worker-down state doesn't spam every session.created.
 
 ### Notes
 - **`.jsonc` comment loss:** the installer round-trips opencode config through `JSON.stringify`, which strips comments. A console + structured warning fires before each destructive write so users with hand-edited `opencode.jsonc` are notified. A comment-preserving writer (e.g., `jsonc-parser`'s `modify` + `applyEdits` API) is tracked as follow-up.
 - **`process.execPath` staleness:** the resolved Node binary path is baked into `opencode.jsonc` at install time. Under nvm, upgrading Node means re-running `npx claude-mem install --ide opencode` to refresh the path.
+- **VCS impact:** any project where you run OpenCode will get an `AGENTS.md` created or modified on session start. If you commit `AGENTS.md` to a shared repo, expect git diffs. Consider adding `AGENTS.md` to `.gitignore` for projects where you don't want memory context tracked.
 
 ## [12.6.0] - 2026-05-04
 
