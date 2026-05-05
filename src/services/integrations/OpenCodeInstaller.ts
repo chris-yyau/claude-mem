@@ -2,10 +2,12 @@
 import path from 'path';
 import { homedir } from 'os';
 import { fileURLToPath } from 'url';
-import { existsSync, readFileSync, writeFileSync, mkdirSync, copyFileSync, unlinkSync } from 'fs';
+import { existsSync, readFileSync, writeFileSync, renameSync, mkdirSync, copyFileSync, unlinkSync } from 'fs';
+import { parse as parseJsoncString, ParseError } from 'jsonc-parser';
 import { logger } from '../../utils/logger.js';
 import { CONTEXT_TAG_OPEN, CONTEXT_TAG_CLOSE, injectContextIntoMarkdownFile } from '../../utils/context-injection.js';
 import { getWorkerPort } from '../../shared/worker-utils.js';
+import { findMcpServerPath } from './CursorHooksInstaller.js';
 
 export function getOpenCodeConfigDirectory(): string {
   if (process.env.OPENCODE_CONFIG_DIR) {
@@ -43,6 +45,50 @@ export function findBuiltPluginPath(): string | null {
   }
 
   return null;
+}
+
+interface OpenCodeConfig {
+  mcp?: Record<string, unknown>;
+  [key: string]: unknown;
+}
+
+// String-aware JSONC parsing via jsonc-parser (the same parser VS Code uses).
+// Replaces a previous regex stripper that only handled line-start comments
+// and could mangle commas inside string values.
+function parseJsoncFile(filePath: string): OpenCodeConfig {
+  const raw = readFileSync(filePath, 'utf-8');
+  const errors: ParseError[] = [];
+  const parsed = parseJsoncString(raw, errors, {
+    allowTrailingComma: true,
+    disallowComments: false,
+  });
+  if (errors.length > 0) {
+    const summary = errors
+      .slice(0, 3)
+      .map(e => `code=${e.error} at offset ${e.offset}`)
+      .join(', ');
+    throw new Error(`Failed to parse JSONC: ${summary}`);
+  }
+  return (parsed ?? {}) as OpenCodeConfig;
+}
+
+// Atomic write: writes to a sibling tmp file then renames, so a crash mid-write
+// can never leave the user's opencode config truncated. rename(2) is atomic
+// on POSIX filesystems within a single mount point. Cleans up the tmp file
+// on rename failure so we don't leave orphaned `*.tmp.<pid>` siblings.
+function atomicWriteJson(targetPath: string, content: string): void {
+  const tmpPath = `${targetPath}.tmp.${process.pid}`;
+  writeFileSync(tmpPath, content, 'utf-8');
+  try {
+    renameSync(tmpPath, targetPath);
+  } catch (renameError) {
+    try {
+      unlinkSync(tmpPath);
+    } catch {
+      // Best-effort cleanup; surface the original rename error below.
+    }
+    throw renameError;
+  }
 }
 
 export function installOpenCodePlugin(): number {
@@ -83,6 +129,114 @@ export function injectContextIntoAgentsMd(contextContent: string): number {
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     console.error(`Failed to inject context into AGENTS.md: ${message}`);
+    return 1;
+  }
+}
+
+export function registerOpenCodeMcp(): number {
+  const mcpServerPath = findMcpServerPath();
+  if (!mcpServerPath) {
+    console.error('Could not find MCP server script for OpenCode');
+    console.error('   Expected at: ~/.claude/plugins/marketplaces/thedotmack/plugin/scripts/mcp-server.cjs');
+    return 1;
+  }
+
+  const configDir = getOpenCodeConfigDirectory();
+  const configPath = path.join(configDir, 'opencode.jsonc');
+  const configJsonPath = path.join(configDir, 'opencode.json');
+
+  // Prefer existing opencode.jsonc, then opencode.json. If neither exists
+  // (fresh OpenCode install or user hasn't launched it yet), create a new
+  // opencode.json so MCP registration succeeds rather than bailing — that
+  // matches the "auto-registration" advertised in the install flow.
+  let actualConfigPath: string | null = null;
+  if (existsSync(configPath)) actualConfigPath = configPath;
+  else if (existsSync(configJsonPath)) actualConfigPath = configJsonPath;
+
+  if (!actualConfigPath) {
+    try {
+      mkdirSync(configDir, { recursive: true });
+      actualConfigPath = configJsonPath;
+      atomicWriteJson(actualConfigPath, '{}\n');
+      console.log(`  Created opencode config at ${actualConfigPath}`);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error(`Failed to create opencode config at ${configJsonPath}: ${message}`);
+      return 1;
+    }
+  }
+
+  try {
+    const config = parseJsoncFile(actualConfigPath);
+
+    if (!config.mcp) {
+      config.mcp = {};
+    }
+
+    // Don't overwrite existing config if already present
+    if (config.mcp['claude-mem']) {
+      console.log('  claude-mem MCP server already registered in opencode config');
+      return 0;
+    }
+
+    config.mcp['claude-mem'] = {
+      type: 'local',
+      // process.execPath instead of literal 'node' so MCP launches under the
+      // same Node binary that ran the installer (handles nvm/npx-installed
+      // Node where 'node' may not be on OpenCode's PATH).
+      command: [process.execPath, mcpServerPath],
+      enabled: true,
+    };
+
+    // Warn if the config was .jsonc — JSON.stringify strips comments
+    if (actualConfigPath.endsWith('.jsonc')) {
+      const warningMsg = 'Writing opencode config as strict JSON — comments in the original .jsonc file will be lost';
+      logger.warn('OPENCODE', warningMsg, { configPath: actualConfigPath });
+      console.warn(`  ⚠️  ${warningMsg}`);
+    }
+    atomicWriteJson(actualConfigPath, JSON.stringify(config, null, 2) + '\n');
+    console.log(`  Registered claude-mem MCP server in ${path.basename(actualConfigPath)}`);
+    logger.info('OPENCODE', 'MCP server registered', { configPath: actualConfigPath });
+    return 0;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(`Failed to register claude-mem MCP in opencode config: ${message}`);
+    return 1;
+  }
+}
+
+export function unregisterOpenCodeMcp(): number {
+  const configDir = getOpenCodeConfigDirectory();
+  const configPath = path.join(configDir, 'opencode.jsonc');
+  const configJsonPath = path.join(configDir, 'opencode.json');
+
+  let actualConfigPath: string | null = null;
+  if (existsSync(configPath)) actualConfigPath = configPath;
+  else if (existsSync(configJsonPath)) actualConfigPath = configJsonPath;
+
+  if (!actualConfigPath) return 0; // No config, nothing to unregister
+
+  try {
+    const config = parseJsoncFile(actualConfigPath);
+
+    if (config.mcp && config.mcp['claude-mem']) {
+      delete config.mcp['claude-mem'];
+      if (Object.keys(config.mcp).length === 0) {
+        delete config.mcp;
+      }
+      if (actualConfigPath.endsWith('.jsonc')) {
+        const warningMsg = 'Writing opencode config as strict JSON — comments in the original .jsonc file will be lost';
+        logger.warn('OPENCODE', warningMsg, { configPath: actualConfigPath });
+        console.warn(`  ⚠️  ${warningMsg}`);
+      }
+      atomicWriteJson(actualConfigPath, JSON.stringify(config, null, 2) + '\n');
+      console.log(`  Removed claude-mem MCP server from ${path.basename(actualConfigPath)}`);
+      logger.info('OPENCODE', 'MCP server unregistered', { configPath: actualConfigPath });
+    }
+    return 0;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(`Failed to unregister claude-mem MCP from opencode config: ${message}`);
     return 1;
   }
 }
@@ -191,6 +345,11 @@ export function uninstallOpenCodePlugin(): number {
     }
   }
 
+  const mcpUninstallResult = unregisterOpenCodeMcp();
+  if (mcpUninstallResult !== 0) {
+    hasErrors = true;
+  }
+
   return hasErrors ? 1 : 0;
 }
 
@@ -219,6 +378,24 @@ export function checkOpenCodeStatus(): number {
     console.log(`  Exists: no`);
   }
 
+  const mcpServerPath = findMcpServerPath();
+  console.log(`MCP server script: ${mcpServerPath || 'not found'}`);
+
+  // Check if registered in opencode config
+  const configPath = path.join(configDirectory, 'opencode.jsonc');
+  const configJsonPath = path.join(configDirectory, 'opencode.json');
+  let actualConfigPath = existsSync(configPath) ? configPath : existsSync(configJsonPath) ? configJsonPath : null;
+  if (actualConfigPath) {
+    try {
+      const config = parseJsoncFile(actualConfigPath);
+      console.log(`  MCP registered: ${config.mcp?.['claude-mem'] ? 'yes' : 'no'}`);
+    } catch {
+      console.log(`  MCP registered: could not parse config`);
+    }
+  } else {
+    console.log(`  MCP registered: no config file found`);
+  }
+
   console.log('');
   return 0;
 }
@@ -229,6 +406,24 @@ export async function installOpenCodeIntegration(): Promise<number> {
   const pluginResult = installOpenCodePlugin();
   if (pluginResult !== 0) {
     return pluginResult;
+  }
+
+  const mcpResult = registerOpenCodeMcp();
+  if (mcpResult !== 0) {
+    // Build the manual-recovery snippet via JSON.stringify so paths with
+    // backslashes (Windows) get JSON-escaped properly. Naive interpolation
+    // would print invalid JSON exactly when users need to copy it.
+    const recoveryConfigPath = path.join(getOpenCodeConfigDirectory(), 'opencode.jsonc');
+    const recoverySnippet = JSON.stringify({
+      'claude-mem': {
+        type: 'local',
+        command: [process.execPath, findMcpServerPath() || 'PATH_TO_mcp-server.cjs'],
+        enabled: true,
+      },
+    });
+    console.warn('  MCP server registration failed — search/timeline tools will not be available in OpenCode.');
+    console.warn(`  You can register it manually by adding this to ${recoveryConfigPath} under "mcp":`);
+    console.warn(`  ${recoverySnippet}`);
   }
 
   const placeholderContext = `# Memory Context from Past Sessions
