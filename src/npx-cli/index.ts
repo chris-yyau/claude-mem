@@ -23,8 +23,8 @@ ${pc.bold('Install Commands')} (no Bun required):
   ${pc.cyan('npx claude-mem')}                     Interactive install
   ${pc.cyan('npx claude-mem install')}              Interactive install
   ${pc.cyan('npx claude-mem install --ide <id>')}   Install for specific IDE
-  ${pc.cyan('npx claude-mem install --provider claude|gemini|openrouter')}   Set LLM provider non-interactively
-  ${pc.cyan('npx claude-mem install --model <id>')}   Set Claude model (when provider=claude)
+  ${pc.cyan('npx claude-mem install --provider claude|gemini|openrouter|opencode')}   Set LLM provider non-interactively
+  ${pc.cyan('npx claude-mem install --model <id>')}   Set Claude model (when provider=claude) or OpenCode model (when provider=opencode)
   ${pc.cyan('npx claude-mem install --no-auto-start')}   Skip worker auto-start at the end
   ${pc.cyan('npx claude-mem repair')}                Repair runtime (re-runs Bun/uv setup and bun install in plugin cache)
   ${pc.cyan('npx claude-mem update')}               Update to latest version
@@ -63,8 +63,8 @@ function readFlag(argv: string[], name: string): string | undefined {
 
 function parseInstallOptions(argv: string[]): InstallOptions {
   const provider = readFlag(argv, '--provider');
-  if (provider !== undefined && provider !== 'claude' && provider !== 'gemini' && provider !== 'openrouter') {
-    console.error(`Unknown --provider: ${provider}. Allowed: claude, gemini, openrouter`);
+  if (provider !== undefined && provider !== 'claude' && provider !== 'gemini' && provider !== 'openrouter' && provider !== 'opencode') {
+    console.error(`Unknown --provider: ${provider}. Allowed: claude, gemini, openrouter, opencode`);
     process.exit(1);
   }
   return {

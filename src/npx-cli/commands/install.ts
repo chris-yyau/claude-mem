@@ -1,6 +1,6 @@
 import * as p from '@clack/prompts';
 import pc from 'picocolors';
-import { execSync } from 'child_process';
+import { execFileSync, execSync } from 'child_process';
 import { spawnHidden } from '../../shared/spawn.js';
 import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { homedir } from 'os';
@@ -583,7 +583,7 @@ function mergeSettings(updates: Record<string, string>): boolean {
   }
 }
 
-type ProviderId = 'claude' | 'gemini' | 'openrouter';
+type ProviderId = 'claude' | 'gemini' | 'openrouter' | 'opencode';
 
 async function promptProvider(options: InstallOptions): Promise<ProviderId> {
   const initialProvider = (getSetting('CLAUDE_MEM_PROVIDER') as ProviderId) || 'claude';
@@ -598,6 +598,11 @@ async function promptProvider(options: InstallOptions): Promise<ProviderId> {
       if (options.provider === 'claude') {
         persistClaudeProvider();
         return 'claude';
+      }
+      if (options.provider === 'opencode') {
+        const wrote = mergeSettings({ CLAUDE_MEM_PROVIDER: 'opencode' });
+        if (wrote) log.info('Saved provider=opencode to ~/.claude-mem/settings.json');
+        return 'opencode';
       }
       const wrote = mergeSettings({ CLAUDE_MEM_PROVIDER: options.provider });
       if (wrote) log.info(`Saved provider=${options.provider} to ~/.claude-mem/settings.json`);
@@ -615,6 +620,7 @@ async function promptProvider(options: InstallOptions): Promise<ProviderId> {
       message: 'Which LLM provider should claude-mem use to compress observations?',
       options: [
         { value: 'claude', label: 'Claude Code auth (default — no extra setup, uses your existing Claude Code subscription)' },
+        { value: 'opencode', label: 'OpenCode CLI (uses your local opencode binary — no API key needed)' },
         { value: 'gemini', label: 'Gemini API key (free tier available — fast and cheap)' },
         { value: 'openrouter', label: 'OpenRouter API key (BYO model — wide selection of frontier and open models)' },
       ],
@@ -631,6 +637,13 @@ async function promptProvider(options: InstallOptions): Promise<ProviderId> {
   if (selectedProvider === 'claude') {
     persistClaudeProvider();
     return 'claude';
+  }
+
+  if (selectedProvider === 'opencode') {
+    const wrote = mergeSettings({ CLAUDE_MEM_PROVIDER: 'opencode' });
+    if (wrote) log.info('Saved provider=opencode to ~/.claude-mem/settings.json');
+    log.info('OpenCode provider selected — no API key needed, uses your local opencode binary.');
+    return 'opencode';
   }
 
   const providerLabel = selectedProvider === 'gemini' ? 'Gemini' : 'OpenRouter';
@@ -715,9 +728,106 @@ async function promptClaudeModel(options: InstallOptions): Promise<void> {
   }
 }
 
+/**
+ * Enumerate models from the installed `opencode` CLI. Returns an empty list
+ * if opencode isn't on PATH or the command fails — the caller falls back to
+ * a free-text prompt in that case. Uses execFileSync (no shell) to avoid
+ * any injection surface even though the args are static.
+ */
+function listOpenCodeModels(): string[] {
+  try {
+    const stdout = execFileSync('opencode', ['models'], {
+      encoding: 'utf-8',
+      timeout: 5000,
+      stdio: ['ignore', 'pipe', 'ignore'],
+      windowsHide: true,
+    });
+    return stdout
+      .split('\n')
+      .map(line => line.trim())
+      .filter(line => line.length > 0 && line.includes('/'))
+      .sort();
+  } catch {
+    return [];
+  }
+}
+
+async function promptOpenCodeModel(options: InstallOptions): Promise<void> {
+  // Non-interactive --model flag: persist verbatim. We don't validate against
+  // `opencode models` because opencode is the source of truth for what's
+  // valid — failing fast at install time would be wrong if the user intends
+  // to add a provider later. The worker reports a clear error if invalid.
+  if (options.model) {
+    const wrote = mergeSettings({ CLAUDE_MEM_OPENCODE_MODEL: options.model });
+    if (wrote) {
+      log.info(`Saved OpenCode model=${options.model} to ~/.claude-mem/settings.json`);
+    }
+    return;
+  }
+
+  if (!isInteractive) return;
+
+  const initialModel = getSetting('CLAUDE_MEM_OPENCODE_MODEL') || '';
+  const availableModels = listOpenCodeModels();
+
+  // Fallback: opencode not in PATH (or `opencode models` failed). Free-text
+  // input so the user can still type a `provider/model` they know they have.
+  if (availableModels.length === 0) {
+    log.warn('Could not enumerate models from `opencode` (not in PATH or command failed).');
+    const result = await p.text({
+      message: 'Which OpenCode model should claude-mem use? Format: provider/model',
+      placeholder: 'leave blank to use opencode\'s default',
+      initialValue: initialModel,
+    });
+    if (p.isCancel(result)) {
+      p.cancel('Installation cancelled.');
+      process.exit(0);
+    }
+    const selectedModel = (result as string)?.trim() ?? '';
+    const wrote = mergeSettings({ CLAUDE_MEM_OPENCODE_MODEL: selectedModel });
+    if (wrote) {
+      log.info(`Saved OpenCode model=${selectedModel || '(opencode default)'} to ~/.claude-mem/settings.json`);
+    }
+    return;
+  }
+
+  // Recommended-for-compression heuristic: surface fast/cheap models near the
+  // top so users picking blindly land on something reasonable. Pure presentation
+  // — every model from `opencode models` is still selectable below.
+  const cheapKeywords = /(haiku|flash|lite|nano|mini|free)/i;
+  const recommended = availableModels.filter(m => cheapKeywords.test(m));
+  const others = availableModels.filter(m => !cheapKeywords.test(m));
+  const ordered = [...recommended, ...others];
+
+  const initialValue = ordered.includes(initialModel) ? initialModel : '';
+
+  const result = await p.select<string>({
+    message: 'Which OpenCode model should claude-mem use to compress observations?\nThis runs on every observation — keep it cheap and fast.',
+    options: [
+      { value: '', label: '(opencode default — uses whatever you set in opencode config)' },
+      ...ordered.map(m => ({
+        value: m,
+        label: recommended.includes(m) ? `${m}  ★ recommended` : m,
+      })),
+    ],
+    initialValue,
+  });
+
+  if (p.isCancel(result)) {
+    p.cancel('Installation cancelled.');
+    process.exit(0);
+  }
+  const selectedModel = result as string;
+
+  const wrote = mergeSettings({ CLAUDE_MEM_OPENCODE_MODEL: selectedModel });
+  if (wrote) {
+    log.info(`Saved OpenCode model=${selectedModel || '(opencode default)'} to ~/.claude-mem/settings.json`);
+  }
+}
+
 export interface InstallOptions {
   ide?: string;
-  provider?: 'claude' | 'gemini' | 'openrouter';
+  provider?: 'claude' | 'gemini' | 'openrouter' | 'opencode';
   model?: string;
   noAutoStart?: boolean;
 }
@@ -792,6 +902,8 @@ export async function runInstallCommand(options: InstallOptions = {}): Promise<v
   const selectedProvider = await promptProvider(options);
   if (selectedProvider === 'claude') {
     await promptClaudeModel(options);
+  } else if (selectedProvider === 'opencode') {
+    await promptOpenCodeModel(options);
   }
 
   let workerStartResult: WorkerStartResult = 'dead';

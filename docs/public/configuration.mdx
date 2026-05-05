@@ -14,7 +14,7 @@ Settings are managed in `~/.claude-mem/settings.json`. The file is auto-created 
 | Setting                       | Default                         | Description                           |
 |-------------------------------|---------------------------------|---------------------------------------|
 | `CLAUDE_MEM_MODEL`            | `claude-haiku-4-5-20251001`     | Claude model used to compress observations (when using the Claude provider) |
-| `CLAUDE_MEM_PROVIDER`         | `claude`                        | AI provider: `claude`, `gemini`, or `openrouter` |
+| `CLAUDE_MEM_PROVIDER`         | `claude`                        | AI provider: `claude`, `gemini`, `openrouter`, or `opencode` |
 | `CLAUDE_MEM_MODE`             | `code`                          | Active mode profile (e.g., `code--es`, `email-investigation`) |
 | `CLAUDE_MEM_CONTEXT_OBSERVATIONS` | `50`                        | Number of observations to inject      |
 | `CLAUDE_MEM_WORKER_PORT`      | `37700 + (uid % 100)`           | Worker service port (per-user default; override for fixed port) |
@@ -43,6 +43,18 @@ See [Gemini Provider](usage/gemini-provider) for detailed configuration and free
 | `CLAUDE_MEM_OPENROUTER_APP_NAME`             | `claude-mem`                | Optional: App name for analytics      |
 
 See [OpenRouter Provider](usage/openrouter-provider) for detailed configuration, free model list, and usage guide.
+
+### OpenCode Provider Settings
+
+Use this provider when you have the local [`opencode`](https://github.com/sst/opencode) CLI installed — claude-mem shells out to `opencode run --format json` for compression, so no separate API key is needed (OpenCode handles auth via whatever provider it's already configured to use).
+
+| Setting                                  | Default     | Description                                                                                |
+|------------------------------------------|-------------|--------------------------------------------------------------------------------------------|
+| `CLAUDE_MEM_OPENCODE_MODEL`              | _(empty)_   | Model in `provider/model` form (e.g. `opencode-go/glm-5.1`). Empty = opencode's default.   |
+| `CLAUDE_MEM_OPENCODE_MAX_TOKENS`         | `100000`    | Estimated-token warning threshold. Logged when prompts exceed it.                          |
+| `CLAUDE_MEM_OPENCODE_SKIP_PERMISSIONS`   | `false`     | Opt-in: pass `--dangerously-skip-permissions` to opencode. Off by default.                 |
+
+The interactive installer runs `opencode models` to enumerate available models, sorts cheap/fast candidates (haiku, flash, lite, nano, mini, free) to the top with a star marker, and falls back to a free-text input if `opencode` isn't on PATH.
 
 ### System Configuration
 
