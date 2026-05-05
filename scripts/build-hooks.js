@@ -262,6 +262,12 @@ async function buildHooks() {
       platform: 'node',
       target: 'node18',
       format: 'esm',
+      // Prefer the `module` (ESM) entry over `main` (UMD/CJS) when a dep ships
+      // both. Without this, esbuild's ESM-output bundler picks the UMD entry
+      // for deps like jsonc-parser, then has to inject a dynamic-require shim
+      // that throws at runtime ("Dynamic require of './impl/format' is not
+      // supported"). Pulling the ESM entry sidesteps the UMD wrapper entirely.
+      mainFields: ['module', 'main'],
       outfile: `${npxCliOutDir}/index.js`,
       banner: { js: '#!/usr/bin/env node' },
       minify: true,
