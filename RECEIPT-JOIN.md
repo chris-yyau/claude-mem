@@ -4,6 +4,8 @@
 **Status:** SHIPPED — schema v51 matches this contract; `tool_uses` exists in `~/.claude-mem/claude-mem.db`  
 **Authority split:** Claude-Mem `tool_uses` = identity / DISTINCT COUNT. OpenRouter stamps + spend log = **$**. Never put `cost_usd` / micros on `tool_uses` as authority.
 
+For observation-token expense reports that multiply tokens × published list price (no generation ids), use `docs/expense-pricing/`.
+
 ---
 
 ## Frozen join keys
