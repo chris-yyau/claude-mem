@@ -10,6 +10,7 @@ import {
 } from '../../../sdk/output-classifier.js';
 import { updateCursorContextForProject } from '../../integrations/CursorHooksInstaller.js';
 import { notifyTelegram } from '../../integrations/TelegramNotifier.js';
+import { notifyGrokBotAwareness } from '../../integrations/GrokBotAwarenessPusher.js';
 import { updateFolderClaudeMdFiles } from '../../../utils/claude-md-utils.js';
 import { getWorkerPort } from '../../../shared/worker-utils.js';
 import { recordObserverSuccess } from '../../../shared/observer-health.js';
@@ -582,6 +583,14 @@ export async function processAgentResponse(
     observationIds: result.observationIds,
     project: context.project,
     memorySessionId: session.memorySessionId,
+  });
+
+  void notifyGrokBotAwareness({
+    observations: labeledObservations,
+    observationIds: result.observationIds,
+    project: context.project,
+    memorySessionId: session.memorySessionId,
+    agentId: context.pendingAgentId,
   });
 
   await syncAndBroadcastObservations(
