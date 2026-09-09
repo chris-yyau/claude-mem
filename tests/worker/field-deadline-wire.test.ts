@@ -8,8 +8,13 @@ test('field deadline cancels real OpenRouter fetch and prevents retries', async 
   let disconnected = false;
   const server = createServer((req, res) => {
     requests++;
-    req.resume();
-    res.on('close', () => { disconnected = true; });
+    // Do not resume() the body: on older Bun versions that keeps the keep-alive
+    // socket open and `res.on('close')` does not fire within the observation
+    // window. The request's own abort/error and socket-close events are the
+    // event-driven, runtime-agnostic signal that the client disconnected.
+    req.on('error', () => { disconnected = true; });
+    req.on('close', () => { if ((req as any).aborted || (req as any).destroyed) disconnected = true; });
+    req.socket.on('close', () => { disconnected = true; });
     // Deliberately never send headers: cancellation must reach the socket.
   });
   await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
