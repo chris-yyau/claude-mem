@@ -148,7 +148,7 @@ function compactEditOutput(fields: { toolInput: unknown; toolOutput: unknown }, 
         || (input.replace_all !== undefined && typeof input.replace_all !== 'boolean')
         || (output.replaceAll !== undefined && output.replaceAll !== (input.replace_all ?? false))
         || !Array.isArray(output.structuredPatch) || !output.structuredPatch.length) return fields.toolOutput;
-    const rawLength = JSON.stringify(output).length;
+    const rawLength = JSON.stringify(fields.toolOutput, null, 2).length;
     if (rawLength <= maxChars) return fields.toolOutput;
     for (const h of output.structuredPatch) {
       if (!h || Object.keys(h).some(k => !['oldStart', 'oldLines', 'newStart', 'newLines', 'lines'].includes(k))
@@ -167,7 +167,7 @@ function compactEditOutput(fields: { toolInput: unknown; toolOutput: unknown }, 
       originalFile: output.originalFile === null ? null : `[omitted ${output.originalFile.length} source characters]`,
       structuredPatch: output.structuredPatch.map(({ lines, ...h }: any) => ({ ...h, omitted_lines: lines.length })),
       observer_note: 'Redundant full-source and patch lines omitted; exact native oldString/newString and hunk locations retained. Raw tool payload unchanged.' };
-    return JSON.stringify(view).length <= maxChars ? view : fields.toolOutput;
+    return JSON.stringify(view, null, 2).length <= maxChars ? view : fields.toolOutput;
   } catch {
     return fields.toolOutput; // Unknown/non-JSON shapes retain the existing bounded model/fallback path.
   }

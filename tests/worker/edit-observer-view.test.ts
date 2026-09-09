@@ -59,6 +59,25 @@ test('native Edit observer view removes redundant patch bytes for objects and HT
   }
 });
 
+test('Edit budget uses the same escaped representation as optimizeField', async () => {
+  const lines = [...Array(1800).fill(' "'), '-old()', '+new()'];
+  const raw = { ...output, structuredPatch: [{ oldStart: 1, oldLines: 1801,
+    newStart: 1, newLines: 1801, lines }] };
+  expect(JSON.stringify(raw).length).toBeLessThan(16000);
+  for (const value of [raw, JSON.stringify(raw)]) {
+    expect(JSON.stringify(value, null, 2).length).toBeGreaterThan(16000);
+    const fields = { toolInput: JSON.stringify(input), toolOutput: value };
+    const before = JSON.stringify(fields);
+    let calls = 0;
+    const result = await optimizeObservationFields(fields, async () => { calls++; return null; },
+      { sessionDbId: 0, toolName: 'Edit' });
+    expect(calls).toBe(0);
+    expect(JSON.stringify(result.toolOutput, null, 2).length).toBeLessThan(16000);
+    expect(result.toolOutput).toMatchObject({ oldString: 'old()', newString: 'new()' });
+    expect(JSON.stringify(fields)).toBe(before);
+  }
+});
+
 test('unknown, inconsistent, modified, or failed Edit results keep the normal path', async () => {
   for (const change of [{ userModified: true }, { oldString: 'different' }, { error: 'failed' },
     { extraNativeField: true }, { structuredPatch: [{ ...output.structuredPatch[0], oldLines: 2 }] },
