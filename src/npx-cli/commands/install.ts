@@ -291,7 +291,8 @@ async function resolveClaudeAutoMemoryChoice(
     initialValue: 'leave-enabled',
   });
 
-  if (p.isCancel(choice)) {
+  // @clack/prompts 1.8: isCancel narrows to unique CANCEL_SYMBOL, not generic symbol.
+  if (p.isCancel(choice) || typeof choice === 'symbol') {
     p.cancel('Installation cancelled.');
     process.exit(0);
   }
@@ -943,7 +944,8 @@ async function promptRuntime(options: InstallOptions): Promise<RuntimeId> {
     initialValue: 'worker',
   });
 
-  if (p.isCancel(selected)) {
+  // @clack/prompts 1.8: isCancel narrows to unique CANCEL_SYMBOL, not generic symbol.
+  if (p.isCancel(selected) || typeof selected === 'symbol') {
     p.cancel('Installation cancelled.');
     process.exit(0);
   }
@@ -1103,7 +1105,8 @@ async function promptProvider(
         initialValues: ['cmem'],
         required: true,
       });
-      if (p.isCancel(providerResult)) {
+      // @clack/prompts 1.8: isCancel narrows to unique CANCEL_SYMBOL, not generic symbol.
+      if (p.isCancel(providerResult) || !Array.isArray(providerResult)) {
         p.cancel('Installation cancelled.');
         process.exit(1);
       }

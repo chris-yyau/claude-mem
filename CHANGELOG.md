@@ -4,6 +4,15 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [Unreleased]
+
+### Grok Bot awareness push pilot (Phase 0 + Phase 1)
+
+- Transcript watches now carry `agentId` from `agent-transcripts/<agent_id>/` through `ingestObservation`, so Grok Bot observations are labeled with the host agent.
+- Agents that already have a `memory/` tree are watched even without `profile.json`.
+- Grok Bot capture stays on the transcript watcher (no host hooks), so `#2188` empty-stdin / `CAPTURE_BROKEN` does not block this feed.
+- After `processAgentResponse`, a fifth fire-and-forget consumer appends needle observations as `- YYYY-MM-DD [awareness] …` lines into `<agentDataRoot>/agents/<agent_id>/memory/log/YYYY-MM.md` for pilot agents LFG and Orifice. Atomic write + content dedupe. Never writes `profile.md` / user-memory / project memory. Gated by `CLAUDE_MEM_GROK_BOT_AWARENESS_*` settings.
+
 ## [13.24.1] - 2026-09-05
 
 ## Patch release — ship the rebuilt plugin bundles
